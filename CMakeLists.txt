@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(LarpReader
-    VERSION 0.0.6
+    VERSION 0.0.7
     LANGUAGES C CXX
 )
 
@@ -122,6 +122,6 @@ target_link_libraries(larpreader PRIVATE
 create_pbp_file(
     TARGET larpreader
     TITLE "Larp Reader"
-    VERSION "00.06"
+    VERSION "00.07"
     MEMSIZE 1
 )

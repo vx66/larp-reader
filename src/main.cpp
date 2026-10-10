@@ -104,6 +104,15 @@ struct ChapterDocument
     std::string error;
 
     bool valid = false;
+
+    /*
+     * True means that this is a valid spine item
+     * but it contains no text that Larp Reader can
+     * render yet.
+     *
+     * Typical example: an SVG/image-only cover.
+     */
+    bool skippable = false;
 };
 
 struct ReadingProgress
@@ -1174,6 +1183,10 @@ ReaderStructure loadReaderStructure(
             continue;
         }
 
+        /*
+         * EPUB 3 navigation documents are not part
+         * of normal reading content for us.
+         */
         if (
             propertyContainsToken(
                 item.properties,
@@ -1496,6 +1509,14 @@ ChapterDocument loadChapterDocument(
             archive
         );
 
+        /*
+         * Failure to actually retrieve the resource is
+         * considered an EPUB/file error, not something
+         * that should be silently skipped.
+         */
+        result.skippable =
+            false;
+
         return result;
     }
 
@@ -1512,8 +1533,17 @@ ChapterDocument loadChapterDocument(
         result.text.empty()
     )
     {
+        /*
+         * The XHTML exists and was opened correctly,
+         * but contains no textual body that we support.
+         *
+         * Image/SVG cover pages fall into this case.
+         */
         result.error =
-            "Chapter has no readable text";
+            "Spine item contains no readable text";
+
+        result.skippable =
+            true;
 
         return result;
     }
@@ -1941,7 +1971,7 @@ void loadProgress(
         ReadingProgress progress;
 
         /*
-         * Backwards compatibility with v0.0.5:
+         * Compatibility with the old v0.0.5 format:
          *
          * filename<TAB>topLine
          */
@@ -2323,6 +2353,64 @@ void loadingFailed(
     );
 }
 
+void finishChapterSearchWithoutResult(
+    App& app)
+{
+    /*
+     * When navigating from an already-open chapter,
+     * reaching a cover or other non-text item at the
+     * end of the search is not an error.
+     *
+     * Simply remain on the chapter the user was
+     * already reading.
+     */
+    if (
+        app.loadingReturnScreen ==
+            Screen::Reader &&
+        !app.readerLines.empty() &&
+        app.readerChapterIndex >= 0
+    )
+    {
+        std::printf(
+            "No readable spine item in that direction; "
+            "staying on chapter %d/%zu\n",
+            app.readerChapterIndex + 1,
+            app.readerChapterPaths.size()
+        );
+
+        app.pendingChapter =
+            ChapterDocument{};
+
+        app.pendingChapterIndex =
+            -1;
+
+        app.loadingStage =
+            LoadingStage::None;
+
+        app.loadingMessage.clear();
+        app.loadingDetail.clear();
+
+        app.screen =
+            Screen::Reader;
+
+        clearTextCache(
+            app
+        );
+
+        return;
+    }
+
+    /*
+     * If we were opening the book for the first time
+     * and couldn't find any readable item, then there
+     * genuinely is nothing we can currently display.
+     */
+    loadingFailed(
+        app,
+        "No readable text chapters found"
+    );
+}
+
 void scheduleChapterLoad(
     App& app,
     int chapterIndex,
@@ -2386,6 +2474,69 @@ void scheduleChapterLoad(
 
     clearTextCache(
         app
+    );
+}
+
+void skipCurrentSpineItem(
+    App& app,
+    const std::string& reason)
+{
+    if (
+        app.pendingChapterIndex < 0 ||
+        app.pendingChapterIndex >=
+            static_cast<int>(
+                app.readerChapterPaths.size()
+            )
+    )
+    {
+        finishChapterSearchWithoutResult(
+            app
+        );
+
+        return;
+    }
+
+    std::printf(
+        "Skipping non-text spine item %d/%zu: %s (%s)\n",
+        app.pendingChapterIndex + 1,
+        app.readerChapterPaths.size(),
+        app.readerChapterPaths[
+            app.pendingChapterIndex
+        ].c_str(),
+        reason.c_str()
+    );
+
+    const int nextIndex =
+        app.pendingChapterIndex
+        + app.pendingSearchDirection;
+
+    if (
+        nextIndex < 0 ||
+        nextIndex >=
+            static_cast<int>(
+                app.readerChapterPaths.size()
+            )
+    )
+    {
+        finishChapterSearchWithoutResult(
+            app
+        );
+
+        return;
+    }
+
+    const ChapterPosition nextPosition =
+        app.pendingSearchDirection > 0
+        ? ChapterPosition::Start
+        : ChapterPosition::End;
+
+    scheduleChapterLoad(
+        app,
+        nextIndex,
+        nextPosition,
+        0,
+        app.pendingSearchDirection,
+        app.loadingReturnScreen
     );
 }
 
@@ -2477,8 +2628,8 @@ void processLoadingStage(
     }
 
     /*
-     * Let the loading UI actually reach the framebuffer
-     * before doing blocking work.
+     * Give SDL a couple of frames to put the loading
+     * screen on the framebuffer before blocking work.
      */
     if (
         app.loadingWarmupFrames <
@@ -2663,35 +2814,23 @@ void processLoadingStage(
 
         if (!chapter.valid)
         {
-            const int nextIndex =
-                app.pendingChapterIndex
-                + app.pendingSearchDirection;
-
             if (
-                nextIndex >= 0 &&
-                nextIndex <
-                    static_cast<int>(
-                        app.readerChapterPaths.size()
-                    )
+                chapter.skippable
             )
             {
-                const ChapterPosition nextPosition =
-                    app.pendingSearchDirection > 0
-                    ? ChapterPosition::Start
-                    : ChapterPosition::End;
-
-                scheduleChapterLoad(
+                skipCurrentSpineItem(
                     app,
-                    nextIndex,
-                    nextPosition,
-                    0,
-                    app.pendingSearchDirection,
-                    app.loadingReturnScreen
+                    chapter.error
                 );
 
                 return;
             }
 
+            /*
+             * Missing resource, ZIP failure, etc.
+             * Those are real EPUB errors and should
+             * still be reported.
+             */
             loadingFailed(
                 app,
                 chapter.error
@@ -2757,38 +2896,14 @@ void processLoadingStage(
             lines.empty()
         )
         {
-            const int nextIndex =
-                app.pendingChapterIndex
-                + app.pendingSearchDirection;
-
-            if (
-                nextIndex >= 0 &&
-                nextIndex <
-                    static_cast<int>(
-                        app.readerChapterPaths.size()
-                    )
-            )
-            {
-                const ChapterPosition nextPosition =
-                    app.pendingSearchDirection > 0
-                    ? ChapterPosition::Start
-                    : ChapterPosition::End;
-
-                scheduleChapterLoad(
-                    app,
-                    nextIndex,
-                    nextPosition,
-                    0,
-                    app.pendingSearchDirection,
-                    app.loadingReturnScreen
-                );
-
-                return;
-            }
-
-            loadingFailed(
+            /*
+             * This should be rare because text extraction
+             * already rejected empty content, but treat it
+             * the same way as a visual/non-text spine item.
+             */
+            skipCurrentSpineItem(
                 app,
-                "Chapter produced no text"
+                "Chapter produced no visible lines"
             );
 
             return;
@@ -3319,7 +3434,7 @@ void cancelLoading(
 
     if (
         app.loadingReturnScreen ==
-        Screen::Reader &&
+            Screen::Reader &&
         !app.readerLines.empty()
     )
     {
