@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(DeadReader
-    VERSION 0.0.2
+project(LarpReader
+    VERSION 0.0.3
     LANGUAGES C CXX
 )
 
@@ -12,14 +12,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(PkgConfig REQUIRED)
 
 #
-# Libraries whose pkg-config metadata works correctly on PSP.
+# PSP libraries whose pkg-config metadata works correctly.
 #
 pkg_check_modules(SDL2 REQUIRED sdl2)
 pkg_check_modules(SDL2_TTF REQUIRED SDL2_ttf)
 pkg_check_modules(TINYXML2 REQUIRED tinyxml2)
 
 #
-# Remove host-only flags.
+# Remove Linux/host-only flags that Allegrex does not understand.
 #
 foreach(flag_var
     SDL2_CFLAGS_OTHER
@@ -35,11 +35,9 @@ foreach(flag_var
 endforeach()
 
 #
-# libzip 1.9.2's PSP pkg-config metadata exposes
-# MbedTLS::MbedTLS as though it were a linker library.
-#
-# Avoid that metadata and resolve the actual PSP static
-# libraries directly from the PSPDEV sysroot.
+# libzip 1.9.2 for PSP exposes MbedTLS::MbedTLS through
+# its pkg-config metadata, which CMake interprets as a target.
+# Resolve the actual PSP static libraries manually instead.
 #
 set(PSP_LIB_DIR "$ENV{PSPDEV}/psp/lib")
 
@@ -92,17 +90,17 @@ find_library(ZLIB_LIBRARY
     REQUIRED
 )
 
-add_executable(deadreader
+add_executable(larpreader
     src/main.cpp
 )
 
-target_include_directories(deadreader PRIVATE
+target_include_directories(larpreader PRIVATE
     ${SDL2_INCLUDE_DIRS}
     ${SDL2_TTF_INCLUDE_DIRS}
     ${TINYXML2_INCLUDE_DIRS}
 )
 
-target_compile_options(deadreader PRIVATE
+target_compile_options(larpreader PRIVATE
     -Wall
     -Wextra
 
@@ -111,13 +109,13 @@ target_compile_options(deadreader PRIVATE
     ${TINYXML2_CFLAGS_OTHER}
 )
 
-target_link_options(deadreader PRIVATE
+target_link_options(larpreader PRIVATE
     ${SDL2_LDFLAGS_OTHER}
     ${SDL2_TTF_LDFLAGS_OTHER}
     ${TINYXML2_LDFLAGS_OTHER}
 )
 
-target_link_libraries(deadreader PRIVATE
+target_link_libraries(larpreader PRIVATE
     ${SDL2_TTF_LIBRARIES}
     ${SDL2_LIBRARIES}
 
@@ -125,9 +123,7 @@ target_link_libraries(deadreader PRIVATE
     ${TINYXML2_LIBRARIES}
 
     #
-    # libzip PSP dependencies.
-    # Order matters for static linking:
-    # dependencies come after libzip.
+    # libzip dependencies.
     #
     ${MBEDTLS_LIBRARY}
     ${MBEDX509_LIBRARY}
@@ -138,8 +134,8 @@ target_link_libraries(deadreader PRIVATE
 )
 
 create_pbp_file(
-    TARGET deadreader
-    TITLE "DeadReader"
-    VERSION "00.02"
+    TARGET larpreader
+    TITLE "Larp Reader"
+    VERSION "00.03"
     MEMSIZE 1
 )
