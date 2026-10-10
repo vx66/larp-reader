@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(LarpReader
-    VERSION 0.0.3
+    VERSION 0.0.5
     LANGUAGES C CXX
 )
 
@@ -11,34 +11,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig REQUIRED)
 
-#
-# PSP libraries whose pkg-config metadata works correctly.
-#
 pkg_check_modules(SDL2 REQUIRED sdl2)
 pkg_check_modules(SDL2_TTF REQUIRED SDL2_ttf)
 pkg_check_modules(TINYXML2 REQUIRED tinyxml2)
 
-#
-# Remove Linux/host-only flags that Allegrex does not understand.
-#
 foreach(flag_var
     SDL2_CFLAGS_OTHER
     SDL2_LDFLAGS_OTHER
-
     SDL2_TTF_CFLAGS_OTHER
     SDL2_TTF_LDFLAGS_OTHER
-
     TINYXML2_CFLAGS_OTHER
     TINYXML2_LDFLAGS_OTHER
 )
     list(REMOVE_ITEM ${flag_var} "-pthread")
 endforeach()
 
-#
-# libzip 1.9.2 for PSP exposes MbedTLS::MbedTLS through
-# its pkg-config metadata, which CMake interprets as a target.
-# Resolve the actual PSP static libraries manually instead.
-#
 set(PSP_LIB_DIR "$ENV{PSPDEV}/psp/lib")
 
 find_library(LIBZIP_LIBRARY
@@ -103,7 +90,6 @@ target_include_directories(larpreader PRIVATE
 target_compile_options(larpreader PRIVATE
     -Wall
     -Wextra
-
     ${SDL2_CFLAGS_OTHER}
     ${SDL2_TTF_CFLAGS_OTHER}
     ${TINYXML2_CFLAGS_OTHER}
@@ -122,9 +108,6 @@ target_link_libraries(larpreader PRIVATE
     ${LIBZIP_LIBRARY}
     ${TINYXML2_LIBRARIES}
 
-    #
-    # libzip dependencies.
-    #
     ${MBEDTLS_LIBRARY}
     ${MBEDX509_LIBRARY}
     ${MBEDCRYPTO_LIBRARY}
@@ -136,6 +119,6 @@ target_link_libraries(larpreader PRIVATE
 create_pbp_file(
     TARGET larpreader
     TITLE "Larp Reader"
-    VERSION "00.03"
+    VERSION "00.05"
     MEMSIZE 1
 )
