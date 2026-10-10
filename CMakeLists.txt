@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(LarpReader
-    VERSION 0.0.5
+    VERSION 0.0.6
     LANGUAGES C CXX
 )
 
@@ -18,8 +18,10 @@ pkg_check_modules(TINYXML2 REQUIRED tinyxml2)
 foreach(flag_var
     SDL2_CFLAGS_OTHER
     SDL2_LDFLAGS_OTHER
+
     SDL2_TTF_CFLAGS_OTHER
     SDL2_TTF_LDFLAGS_OTHER
+
     TINYXML2_CFLAGS_OTHER
     TINYXML2_LDFLAGS_OTHER
 )
@@ -90,6 +92,7 @@ target_include_directories(larpreader PRIVATE
 target_compile_options(larpreader PRIVATE
     -Wall
     -Wextra
+
     ${SDL2_CFLAGS_OTHER}
     ${SDL2_TTF_CFLAGS_OTHER}
     ${TINYXML2_CFLAGS_OTHER}
@@ -119,6 +122,6 @@ target_link_libraries(larpreader PRIVATE
 create_pbp_file(
     TARGET larpreader
     TITLE "Larp Reader"
-    VERSION "00.05"
+    VERSION "00.06"
     MEMSIZE 1
 )

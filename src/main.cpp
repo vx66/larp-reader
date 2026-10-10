@@ -45,14 +45,23 @@ enum class Screen
 enum class LoadingStage
 {
     None,
-    OpenBook,
+    OpenStructure,
+    LoadChapter,
     Layout,
     Error
+};
+
+enum class ChapterPosition
+{
+    Start,
+    End,
+    Restore
 };
 
 struct CachedText
 {
     SDL_Texture* texture = nullptr;
+
     int width = 0;
     int height = 0;
 };
@@ -76,16 +85,31 @@ struct ManifestItem
     std::string id;
     std::string href;
     std::string mediaType;
+    std::string properties;
 };
 
-struct ReaderDocument
+struct ReaderStructure
 {
-    std::string title;
-    std::string chapterPath;
+    std::vector<std::string> chapterPaths;
+
+    std::string error;
+
+    bool valid = false;
+};
+
+struct ChapterDocument
+{
+    std::string path;
     std::string text;
     std::string error;
 
     bool valid = false;
+};
+
+struct ReadingProgress
+{
+    int chapterIndex = 0;
+    int topLine = 0;
 };
 
 struct App
@@ -101,26 +125,44 @@ struct App
 
     std::vector<Book> books;
 
-    std::unordered_map<std::string, CachedText> textCache;
-    std::unordered_map<std::string, int> savedTopLines;
+    std::unordered_map<std::string, CachedText>
+        textCache;
+
+    std::unordered_map<std::string, ReadingProgress>
+        savedProgress;
 
     Screen screen = Screen::Library;
+    Screen loadingReturnScreen = Screen::Library;
 
     int selected = 0;
 
     std::string readerBookFilename;
     std::string readerTitle;
-    std::string readerChapterPath;
+
+    std::vector<std::string> readerChapterPaths;
+
+    int readerChapterIndex = -1;
+
+    std::string readerCurrentChapterPath;
 
     std::vector<std::string> readerLines;
 
     int readerTopLine = 0;
 
-    LoadingStage loadingStage = LoadingStage::None;
+    LoadingStage loadingStage =
+        LoadingStage::None;
 
     int pendingBookIndex = -1;
+    int pendingChapterIndex = -1;
 
-    ReaderDocument pendingDocument;
+    int pendingSearchDirection = 1;
+
+    ChapterPosition pendingChapterPosition =
+        ChapterPosition::Start;
+
+    int pendingRestoreTopLine = 0;
+
+    ChapterDocument pendingChapter;
 
     std::string loadingMessage;
     std::string loadingDetail;
@@ -130,13 +172,16 @@ struct App
     bool running = true;
 };
 
-bool endsWithEpub(const std::string& filename)
+bool endsWithEpub(
+    const std::string& filename)
 {
     if (filename.length() < 5)
         return false;
 
     std::string extension =
-        filename.substr(filename.length() - 5);
+        filename.substr(
+            filename.length() - 5
+        );
 
     std::transform(
         extension.begin(),
@@ -147,18 +192,23 @@ bool endsWithEpub(const std::string& filename)
             return static_cast<char>(
                 std::tolower(c)
             );
-        });
+        }
+    );
 
     return extension == ".epub";
 }
 
-const char* localName(const char* name)
+const char* localName(
+    const char* name)
 {
     if (!name)
         return "";
 
     const char* colon =
-        std::strchr(name, ':');
+        std::strchr(
+            name,
+            ':'
+        );
 
     return colon
         ? colon + 1
@@ -174,9 +224,14 @@ findElementByLocalName(
         return nullptr;
 
     for (
-        tinyxml2::XMLNode* child = node->FirstChild();
+        tinyxml2::XMLNode* child =
+            node->FirstChild();
+
         child;
-        child = child->NextSibling())
+
+        child =
+            child->NextSibling()
+    )
     {
         tinyxml2::XMLElement* element =
             child->ToElement();
@@ -185,9 +240,12 @@ findElementByLocalName(
         {
             if (
                 std::strcmp(
-                    localName(element->Name()),
+                    localName(
+                        element->Name()
+                    ),
                     wanted
-                ) == 0)
+                ) == 0
+            )
             {
                 return element;
             }
@@ -228,7 +286,9 @@ bool readZipEntry(
 {
     zip_stat_t statInfo;
 
-    zip_stat_init(&statInfo);
+    zip_stat_init(
+        &statInfo
+    );
 
     if (
         zip_stat(
@@ -236,7 +296,8 @@ bool readZipEntry(
             entryName.c_str(),
             0,
             &statInfo
-        ) != 0)
+        ) != 0
+    )
     {
         error =
             "Missing ZIP entry: "
@@ -245,7 +306,10 @@ bool readZipEntry(
         return false;
     }
 
-    if (statInfo.size > MAX_XML_SIZE)
+    if (
+        statInfo.size >
+        MAX_XML_SIZE
+    )
     {
         error =
             "XML entry too large: "
@@ -278,18 +342,25 @@ bool readZipEntry(
 
     zip_uint64_t totalRead = 0;
 
-    while (totalRead < statInfo.size)
+    while (
+        totalRead <
+        statInfo.size
+    )
     {
         const zip_int64_t readNow =
             zip_fread(
                 file,
-                output.data() + totalRead,
-                statInfo.size - totalRead
+                output.data()
+                    + totalRead,
+                statInfo.size
+                    - totalRead
             );
 
         if (readNow < 0)
         {
-            zip_fclose(file);
+            zip_fclose(
+                file
+            );
 
             error =
                 "Error reading ZIP entry: "
@@ -307,7 +378,9 @@ bool readZipEntry(
             );
     }
 
-    zip_fclose(file);
+    zip_fclose(
+        file
+    );
 
     output.resize(
         static_cast<std::size_t>(
@@ -331,7 +404,8 @@ bool parseContainer(
             "META-INF/container.xml",
             xml,
             error
-        ))
+        )
+    )
     {
         return false;
     }
@@ -342,7 +416,8 @@ bool parseContainer(
         document.Parse(
             xml.data(),
             xml.size()
-        ) != tinyxml2::XML_SUCCESS)
+        ) != tinyxml2::XML_SUCCESS
+    )
     {
         error =
             "Invalid container.xml";
@@ -371,7 +446,8 @@ bool parseContainer(
 
     if (
         !fullPath ||
-        fullPath[0] == '\0')
+        fullPath[0] == '\0'
+    )
     {
         error =
             "rootfile has no full-path";
@@ -379,7 +455,8 @@ bool parseContainer(
         return false;
     }
 
-    opfPath = fullPath;
+    opfPath =
+        fullPath;
 
     return true;
 }
@@ -398,9 +475,11 @@ bool parsePackageMetadata(
             opfPath,
             xml,
             error
-        ))
+        )
+    )
     {
-        book.error = error;
+        book.error =
+            error;
 
         return false;
     }
@@ -411,7 +490,8 @@ bool parsePackageMetadata(
         document.Parse(
             xml.data(),
             xml.size()
-        ) != tinyxml2::XML_SUCCESS)
+        ) != tinyxml2::XML_SUCCESS
+    )
     {
         book.error =
             "Invalid OPF XML";
@@ -446,16 +526,30 @@ bool parsePackageMetadata(
         );
 
     book.title =
-        elementText(title);
+        elementText(
+            title
+        );
 
     book.author =
-        elementText(creator);
+        elementText(
+            creator
+        );
 
-    if (book.title.empty())
-        book.title = book.filename;
+    if (
+        book.title.empty()
+    )
+    {
+        book.title =
+            book.filename;
+    }
 
-    if (book.author.empty())
-        book.author = "Unknown author";
+    if (
+        book.author.empty()
+    )
+    {
+        book.author =
+            "Unknown author";
+    }
 
     return true;
 }
@@ -465,10 +559,13 @@ Book loadBook(
 {
     Book book;
 
-    book.filename = filename;
+    book.filename =
+        filename;
 
     book.path =
-        std::string(BOOKS_PATH)
+        std::string(
+            BOOKS_PATH
+        )
         + "/"
         + filename;
 
@@ -508,11 +605,15 @@ Book loadBook(
             archive,
             book.opfPath,
             error
-        ))
+        )
+    )
     {
-        book.error = error;
+        book.error =
+            error;
 
-        zip_close(archive);
+        zip_close(
+            archive
+        );
 
         return book;
     }
@@ -522,45 +623,62 @@ Book loadBook(
             archive,
             book.opfPath,
             book
-        ))
+        )
+    )
     {
-        zip_close(archive);
+        zip_close(
+            archive
+        );
 
         return book;
     }
 
-    zip_close(archive);
+    zip_close(
+        archive
+    );
 
-    book.valid = true;
+    book.valid =
+        true;
 
     return book;
 }
 
 std::vector<Book> scanBooks()
 {
-    std::vector<std::string> filenames;
+    std::vector<std::string>
+        filenames;
 
     DIR* directory =
-        opendir(BOOKS_PATH);
+        opendir(
+            BOOKS_PATH
+        );
 
     if (!directory)
         return {};
 
     while (
         dirent* entry =
-            readdir(directory))
+            readdir(
+                directory
+            )
+    )
     {
         std::string filename =
             entry->d_name;
 
         if (
             filename == "." ||
-            filename == "..")
+            filename == ".."
+        )
         {
             continue;
         }
 
-        if (endsWithEpub(filename))
+        if (
+            endsWithEpub(
+                filename
+            )
+        )
         {
             filenames.push_back(
                 filename
@@ -568,7 +686,9 @@ std::vector<Book> scanBooks()
         }
     }
 
-    closedir(directory);
+    closedir(
+        directory
+    );
 
     std::sort(
         filenames.begin(),
@@ -583,10 +703,13 @@ std::vector<Book> scanBooks()
 
     for (
         const std::string& filename :
-        filenames)
+        filenames
+    )
     {
         books.push_back(
-            loadBook(filename)
+            loadBook(
+                filename
+            )
         );
     }
 
@@ -597,10 +720,17 @@ std::string archiveDirectory(
     const std::string& path)
 {
     const std::size_t pos =
-        path.find_last_of('/');
+        path.find_last_of(
+            '/'
+        );
 
-    if (pos == std::string::npos)
+    if (
+        pos ==
+        std::string::npos
+    )
+    {
         return {};
+    }
 
     return path.substr(
         0,
@@ -611,17 +741,27 @@ std::string archiveDirectory(
 std::string normalizeArchivePath(
     const std::string& path)
 {
-    std::vector<std::string> parts;
+    std::vector<std::string>
+        parts;
 
     std::size_t start = 0;
 
-    while (start <= path.size())
+    while (
+        start <=
+        path.size()
+    )
     {
         const std::size_t slash =
-            path.find('/', start);
+            path.find(
+                '/',
+                start
+            );
 
         const std::size_t end =
-            slash == std::string::npos
+            (
+                slash ==
+                std::string::npos
+            )
             ? path.size()
             : slash;
 
@@ -633,23 +773,38 @@ std::string normalizeArchivePath(
 
         if (
             !part.empty() &&
-            part != ".")
+            part != "."
+        )
         {
-            if (part == "..")
+            if (
+                part == ".."
+            )
             {
-                if (!parts.empty())
+                if (
+                    !parts.empty()
+                )
+                {
                     parts.pop_back();
+                }
             }
             else
             {
-                parts.push_back(part);
+                parts.push_back(
+                    part
+                );
             }
         }
 
-        if (slash == std::string::npos)
+        if (
+            slash ==
+            std::string::npos
+        )
+        {
             break;
+        }
 
-        start = slash + 1;
+        start =
+            slash + 1;
     }
 
     std::string result;
@@ -657,12 +812,16 @@ std::string normalizeArchivePath(
     for (
         std::size_t i = 0;
         i < parts.size();
-        ++i)
+        ++i
+    )
     {
         if (i > 0)
+        {
             result += '/';
+        }
 
-        result += parts[i];
+        result +=
+            parts[i];
     }
 
     return result;
@@ -676,25 +835,377 @@ std::string resolveArchivePath(
         href;
 
     const std::size_t fragment =
-        cleanHref.find('#');
+        cleanHref.find(
+            '#'
+        );
 
-    if (fragment != std::string::npos)
+    if (
+        fragment !=
+        std::string::npos
+    )
     {
-        cleanHref.erase(fragment);
+        cleanHref.erase(
+            fragment
+        );
     }
 
     const std::size_t query =
-        cleanHref.find('?');
+        cleanHref.find(
+            '?'
+        );
 
-    if (query != std::string::npos)
+    if (
+        query !=
+        std::string::npos
+    )
     {
-        cleanHref.erase(query);
+        cleanHref.erase(
+            query
+        );
     }
 
     return normalizeArchivePath(
-        archiveDirectory(opfPath)
+        archiveDirectory(
+            opfPath
+        )
         + cleanHref
     );
+}
+
+bool propertyContainsToken(
+    const std::string& properties,
+    const std::string& token)
+{
+    std::size_t start = 0;
+
+    while (
+        start <
+        properties.size()
+    )
+    {
+        while (
+            start <
+                properties.size() &&
+            std::isspace(
+                static_cast<unsigned char>(
+                    properties[start]
+                )
+            )
+        )
+        {
+            ++start;
+        }
+
+        if (
+            start >=
+            properties.size()
+        )
+        {
+            break;
+        }
+
+        std::size_t end =
+            start;
+
+        while (
+            end <
+                properties.size() &&
+            !std::isspace(
+                static_cast<unsigned char>(
+                    properties[end]
+                )
+            )
+        )
+        {
+            ++end;
+        }
+
+        if (
+            properties.substr(
+                start,
+                end - start
+            ) == token
+        )
+        {
+            return true;
+        }
+
+        start =
+            end;
+    }
+
+    return false;
+}
+
+ReaderStructure loadReaderStructure(
+    const Book& book)
+{
+    ReaderStructure result;
+
+    int zipError = 0;
+
+    zip_t* archive =
+        zip_open(
+            book.path.c_str(),
+            ZIP_RDONLY,
+            &zipError
+        );
+
+    if (!archive)
+    {
+        result.error =
+            "Could not reopen EPUB";
+
+        return result;
+    }
+
+    std::string opfXml;
+    std::string error;
+
+    if (
+        !readZipEntry(
+            archive,
+            book.opfPath,
+            opfXml,
+            error
+        )
+    )
+    {
+        result.error =
+            error;
+
+        zip_close(
+            archive
+        );
+
+        return result;
+    }
+
+    zip_close(
+        archive
+    );
+
+    tinyxml2::XMLDocument document;
+
+    if (
+        document.Parse(
+            opfXml.data(),
+            opfXml.size()
+        ) != tinyxml2::XML_SUCCESS
+    )
+    {
+        result.error =
+            "Invalid OPF";
+
+        return result;
+    }
+
+    tinyxml2::XMLElement* manifest =
+        findElementByLocalName(
+            &document,
+            "manifest"
+        );
+
+    tinyxml2::XMLElement* spine =
+        findElementByLocalName(
+            &document,
+            "spine"
+        );
+
+    if (
+        !manifest ||
+        !spine
+    )
+    {
+        result.error =
+            "OPF has no manifest/spine";
+
+        return result;
+    }
+
+    std::unordered_map<
+        std::string,
+        ManifestItem
+    > manifestItems;
+
+    for (
+        tinyxml2::XMLElement* item =
+            manifest->FirstChildElement();
+
+        item;
+
+        item =
+            item->NextSiblingElement()
+    )
+    {
+        if (
+            std::strcmp(
+                localName(
+                    item->Name()
+                ),
+                "item"
+            ) != 0
+        )
+        {
+            continue;
+        }
+
+        const char* id =
+            item->Attribute(
+                "id"
+            );
+
+        const char* href =
+            item->Attribute(
+                "href"
+            );
+
+        const char* mediaType =
+            item->Attribute(
+                "media-type"
+            );
+
+        const char* properties =
+            item->Attribute(
+                "properties"
+            );
+
+        if (
+            !id ||
+            !href
+        )
+        {
+            continue;
+        }
+
+        ManifestItem manifestItem;
+
+        manifestItem.id =
+            id;
+
+        manifestItem.href =
+            href;
+
+        if (mediaType)
+        {
+            manifestItem.mediaType =
+                mediaType;
+        }
+
+        if (properties)
+        {
+            manifestItem.properties =
+                properties;
+        }
+
+        manifestItems[
+            manifestItem.id
+        ] =
+            manifestItem;
+    }
+
+    for (
+        tinyxml2::XMLElement* itemRef =
+            spine->FirstChildElement();
+
+        itemRef;
+
+        itemRef =
+            itemRef->NextSiblingElement()
+    )
+    {
+        if (
+            std::strcmp(
+                localName(
+                    itemRef->Name()
+                ),
+                "itemref"
+            ) != 0
+        )
+        {
+            continue;
+        }
+
+        const char* idref =
+            itemRef->Attribute(
+                "idref"
+            );
+
+        if (!idref)
+            continue;
+
+        const char* linear =
+            itemRef->Attribute(
+                "linear"
+            );
+
+        if (
+            linear &&
+            std::strcmp(
+                linear,
+                "no"
+            ) == 0
+        )
+        {
+            continue;
+        }
+
+        auto found =
+            manifestItems.find(
+                idref
+            );
+
+        if (
+            found ==
+            manifestItems.end()
+        )
+        {
+            continue;
+        }
+
+        const ManifestItem& item =
+            found->second;
+
+        if (
+            item.mediaType !=
+            "application/xhtml+xml"
+        )
+        {
+            continue;
+        }
+
+        if (
+            propertyContainsToken(
+                item.properties,
+                "nav"
+            )
+        )
+        {
+            continue;
+        }
+
+        result.chapterPaths.push_back(
+            resolveArchivePath(
+                book.opfPath,
+                item.href
+            )
+        );
+    }
+
+    if (
+        result.chapterPaths.empty()
+    )
+    {
+        result.error =
+            "No readable spine items";
+
+        return result;
+    }
+
+    result.valid =
+        true;
+
+    return result;
 }
 
 bool isBlockElement(
@@ -734,13 +1245,17 @@ void appendXhtmlText(
 
     if (
         tinyxml2::XMLText* text =
-            node->ToText())
+            node->ToText()
+    )
     {
         const char* value =
             text->Value();
 
         if (value)
-            output += value;
+        {
+            output +=
+                value;
+        }
 
         return;
     }
@@ -755,10 +1270,18 @@ void appendXhtmlText(
                 element->Name()
             );
 
-        if (isIgnoredElement(name))
+        if (
+            isIgnoredElement(
+                name
+            )
+        )
+        {
             return;
+        }
 
-        if (name == "br")
+        if (
+            name == "br"
+        )
         {
             output += '\n';
 
@@ -766,9 +1289,12 @@ void appendXhtmlText(
         }
 
         if (
-            isBlockElement(name) &&
+            isBlockElement(
+                name
+            ) &&
             !output.empty() &&
-            output.back() != '\n')
+            output.back() != '\n'
+        )
         {
             output += '\n';
         }
@@ -780,7 +1306,9 @@ void appendXhtmlText(
 
         child;
 
-        child = child->NextSibling())
+        child =
+            child->NextSibling()
+    )
     {
         appendXhtmlText(
             child,
@@ -796,9 +1324,12 @@ void appendXhtmlText(
             );
 
         if (
-            isBlockElement(name) &&
+            isBlockElement(
+                name
+            ) &&
             !output.empty() &&
-            output.back() != '\n')
+            output.back() != '\n'
+        )
         {
             output += '\n';
         }
@@ -810,40 +1341,48 @@ std::string normalizeExtractedText(
 {
     std::string output;
 
-    bool pendingSpace = false;
+    bool pendingSpace =
+        false;
 
     for (
         unsigned char c :
-        input)
+        input
+    )
     {
         if (
             c == '\n' ||
-            c == '\r')
+            c == '\r'
+        )
         {
             while (
                 !output.empty() &&
-                output.back() == ' ')
+                output.back() == ' '
+            )
             {
                 output.pop_back();
             }
 
             if (
                 !output.empty() &&
-                output.back() != '\n')
+                output.back() != '\n'
+            )
             {
                 output += '\n';
             }
 
-            pendingSpace = false;
+            pendingSpace =
+                false;
 
             continue;
         }
 
         if (
             c == ' ' ||
-            c == '\t')
+            c == '\t'
+        )
         {
-            pendingSpace = true;
+            pendingSpace =
+                true;
 
             continue;
         }
@@ -851,15 +1390,19 @@ std::string normalizeExtractedText(
         if (
             pendingSpace &&
             !output.empty() &&
-            output.back() != '\n')
+            output.back() != '\n'
+        )
         {
             output += ' ';
         }
 
-        pendingSpace = false;
+        pendingSpace =
+            false;
 
         output +=
-            static_cast<char>(c);
+            static_cast<char>(
+                c
+            );
     }
 
     while (
@@ -867,7 +1410,8 @@ std::string normalizeExtractedText(
         (
             output.back() == ' ' ||
             output.back() == '\n'
-        ))
+        )
+    )
     {
         output.pop_back();
     }
@@ -884,7 +1428,8 @@ std::string extractXhtmlText(
         document.Parse(
             xml.data(),
             xml.size()
-        ) != tinyxml2::XML_SUCCESS)
+        ) != tinyxml2::XML_SUCCESS
+    )
     {
         return {};
     }
@@ -910,13 +1455,14 @@ std::string extractXhtmlText(
     );
 }
 
-ReaderDocument loadReaderDocument(
-    const Book& book)
+ChapterDocument loadChapterDocument(
+    const Book& book,
+    const std::string& chapterPath)
 {
-    ReaderDocument result;
+    ChapterDocument result;
 
-    result.title =
-        book.title;
+    result.path =
+        chapterPath;
 
     int zipError = 0;
 
@@ -935,240 +1481,51 @@ ReaderDocument loadReaderDocument(
         return result;
     }
 
-    std::string opfXml;
-    std::string error;
+    std::string chapterXml;
 
     if (
         !readZipEntry(
             archive,
-            book.opfPath,
-            opfXml,
-            error
-        ))
+            chapterPath,
+            chapterXml,
+            result.error
+        )
+    )
     {
-        result.error = error;
-
-        zip_close(archive);
+        zip_close(
+            archive
+        );
 
         return result;
     }
 
-    tinyxml2::XMLDocument opfDocument;
+    zip_close(
+        archive
+    );
+
+    result.text =
+        extractXhtmlText(
+            chapterXml
+        );
 
     if (
-        opfDocument.Parse(
-            opfXml.data(),
-            opfXml.size()
-        ) != tinyxml2::XML_SUCCESS)
+        result.text.empty()
+    )
     {
         result.error =
-            "Invalid OPF";
-
-        zip_close(archive);
+            "Chapter has no readable text";
 
         return result;
     }
 
-    tinyxml2::XMLElement* manifest =
-        findElementByLocalName(
-            &opfDocument,
-            "manifest"
-        );
-
-    tinyxml2::XMLElement* spine =
-        findElementByLocalName(
-            &opfDocument,
-            "spine"
-        );
-
-    if (!manifest || !spine)
-    {
-        result.error =
-            "OPF has no manifest/spine";
-
-        zip_close(archive);
-
-        return result;
-    }
-
-    std::unordered_map<
-        std::string,
-        ManifestItem
-    > manifestItems;
-
-    for (
-        tinyxml2::XMLElement* item =
-            manifest->FirstChildElement();
-
-        item;
-
-        item =
-            item->NextSiblingElement())
-    {
-        if (
-            std::strcmp(
-                localName(
-                    item->Name()
-                ),
-                "item"
-            ) != 0)
-        {
-            continue;
-        }
-
-        const char* id =
-            item->Attribute("id");
-
-        const char* href =
-            item->Attribute("href");
-
-        const char* mediaType =
-            item->Attribute(
-                "media-type"
-            );
-
-        if (!id || !href)
-            continue;
-
-        ManifestItem manifestItem;
-
-        manifestItem.id = id;
-        manifestItem.href = href;
-
-        if (mediaType)
-        {
-            manifestItem.mediaType =
-                mediaType;
-        }
-
-        manifestItems[
-            manifestItem.id
-        ] = manifestItem;
-    }
-
-    std::string fallbackText;
-    std::string fallbackPath;
-
-    for (
-        tinyxml2::XMLElement* itemRef =
-            spine->FirstChildElement();
-
-        itemRef;
-
-        itemRef =
-            itemRef->NextSiblingElement())
-    {
-        if (
-            std::strcmp(
-                localName(
-                    itemRef->Name()
-                ),
-                "itemref"
-            ) != 0)
-        {
-            continue;
-        }
-
-        const char* idref =
-            itemRef->Attribute(
-                "idref"
-            );
-
-        if (!idref)
-            continue;
-
-        auto found =
-            manifestItems.find(
-                idref
-            );
-
-        if (
-            found ==
-            manifestItems.end())
-        {
-            continue;
-        }
-
-        const ManifestItem& item =
-            found->second;
-
-        if (
-            item.mediaType !=
-            "application/xhtml+xml")
-        {
-            continue;
-        }
-
-        const std::string chapterPath =
-            resolveArchivePath(
-                book.opfPath,
-                item.href
-            );
-
-        std::string chapterXml;
-        std::string chapterError;
-
-        if (
-            !readZipEntry(
-                archive,
-                chapterPath,
-                chapterXml,
-                chapterError
-            ))
-        {
-            continue;
-        }
-
-        const std::string text =
-            extractXhtmlText(
-                chapterXml
-            );
-
-        if (text.empty())
-            continue;
-
-        if (fallbackText.empty())
-        {
-            fallbackText = text;
-            fallbackPath = chapterPath;
-        }
-
-        if (text.size() >= 400)
-        {
-            result.text = text;
-
-            result.chapterPath =
-                chapterPath;
-
-            break;
-        }
-    }
-
-    if (result.text.empty())
-    {
-        result.text =
-            fallbackText;
-
-        result.chapterPath =
-            fallbackPath;
-    }
-
-    zip_close(archive);
-
-    if (result.text.empty())
-    {
-        result.error =
-            "No readable XHTML found";
-
-        return result;
-    }
-
-    result.valid = true;
+    result.valid =
+        true;
 
     return result;
 }
 
-TTF_Font* loadFont(int size)
+TTF_Font* loadFont(
+    int size)
 {
     const char* paths[] =
     {
@@ -1180,7 +1537,8 @@ TTF_Font* loadFont(int size)
 
     for (
         const char* path :
-        paths)
+        paths
+    )
     {
         TTF_Font* font =
             TTF_OpenFont(
@@ -1204,10 +1562,17 @@ int measureTextWidth(
     >& widthCache)
 {
     auto found =
-        widthCache.find(text);
+        widthCache.find(
+            text
+        );
 
-    if (found != widthCache.end())
+    if (
+        found !=
+        widthCache.end()
+    )
+    {
         return found->second;
+    }
 
     int width = 0;
     int height = 0;
@@ -1218,20 +1583,22 @@ int measureTextWidth(
             text.c_str(),
             &width,
             &height
-        ) != 0)
+        ) != 0
+    )
     {
-        width = 0;
+        width =
+            0;
     }
 
-    /*
-     * Do not let the cache grow forever for huge books.
-     * Common words still receive most of the benefit.
-     */
-    if (widthCache.size() < 4096)
+    if (
+        widthCache.size() <
+        4096
+    )
     {
         widthCache[
             text
-        ] = width;
+        ] =
+            width;
     }
 
     return width;
@@ -1248,25 +1615,38 @@ wrapParagraphFast(
         int
     >& widthCache)
 {
-    std::vector<std::string> lines;
+    std::vector<std::string>
+        lines;
 
     std::string currentLine;
 
-    int currentWidth = 0;
+    int currentWidth =
+        0;
 
-    std::size_t start = 0;
+    std::size_t start =
+        0;
 
-    while (start < paragraph.size())
+    while (
+        start <
+        paragraph.size()
+    )
     {
         while (
-            start < paragraph.size() &&
-            paragraph[start] == ' ')
+            start <
+                paragraph.size() &&
+            paragraph[start] == ' '
+        )
         {
             ++start;
         }
 
-        if (start >= paragraph.size())
+        if (
+            start >=
+            paragraph.size()
+        )
+        {
             break;
+        }
 
         std::size_t end =
             paragraph.find(
@@ -1274,7 +1654,10 @@ wrapParagraphFast(
                 start
             );
 
-        if (end == std::string::npos)
+        if (
+            end ==
+            std::string::npos
+        )
         {
             end =
                 paragraph.size();
@@ -1293,10 +1676,15 @@ wrapParagraphFast(
                 widthCache
             );
 
-        if (currentLine.empty())
+        if (
+            currentLine.empty()
+        )
         {
-            currentLine = word;
-            currentWidth = wordWidth;
+            currentLine =
+                word;
+
+            currentWidth =
+                wordWidth;
         }
         else
         {
@@ -1305,10 +1693,16 @@ wrapParagraphFast(
                 + spaceWidth
                 + wordWidth;
 
-            if (candidateWidth <= maxWidth)
+            if (
+                candidateWidth <=
+                maxWidth
+            )
             {
-                currentLine += " ";
-                currentLine += word;
+                currentLine +=
+                    " ";
+
+                currentLine +=
+                    word;
 
                 currentWidth =
                     candidateWidth;
@@ -1319,15 +1713,21 @@ wrapParagraphFast(
                     currentLine
                 );
 
-                currentLine = word;
-                currentWidth = wordWidth;
+                currentLine =
+                    word;
+
+                currentWidth =
+                    wordWidth;
             }
         }
 
-        start = end + 1;
+        start =
+            end + 1;
     }
 
-    if (!currentLine.empty())
+    if (
+        !currentLine.empty()
+    )
     {
         lines.push_back(
             currentLine
@@ -1343,17 +1743,23 @@ wrapTextFast(
     const std::string& text,
     int maxWidth)
 {
-    std::vector<std::string> lines;
+    std::vector<std::string>
+        lines;
 
     std::unordered_map<
         std::string,
         int
     > widthCache;
 
-    widthCache.reserve(1024);
+    widthCache.reserve(
+        1024
+    );
 
-    int spaceWidth = 0;
-    int unusedHeight = 0;
+    int spaceWidth =
+        0;
+
+    int unusedHeight =
+        0;
 
     TTF_SizeUTF8(
         font,
@@ -1362,9 +1768,13 @@ wrapTextFast(
         &unusedHeight
     );
 
-    std::size_t start = 0;
+    std::size_t start =
+        0;
 
-    while (start <= text.size())
+    while (
+        start <=
+        text.size()
+    )
     {
         std::size_t end =
             text.find(
@@ -1372,7 +1782,10 @@ wrapTextFast(
                 start
             );
 
-        if (end == std::string::npos)
+        if (
+            end ==
+            std::string::npos
+        )
         {
             end =
                 text.size();
@@ -1384,7 +1797,9 @@ wrapTextFast(
                 end - start
             );
 
-        if (!paragraph.empty())
+        if (
+            !paragraph.empty()
+        )
         {
             std::vector<std::string>
                 paragraphLines =
@@ -1402,18 +1817,27 @@ wrapTextFast(
                 paragraphLines.end()
             );
 
-            lines.push_back("");
+            lines.push_back(
+                ""
+            );
         }
 
-        if (end == text.size())
+        if (
+            end ==
+            text.size()
+        )
+        {
             break;
+        }
 
-        start = end + 1;
+        start =
+            end + 1;
     }
 
     if (
         !lines.empty() &&
-        lines.back().empty())
+        lines.back().empty()
+    )
     {
         lines.pop_back();
     }
@@ -1421,7 +1845,8 @@ wrapTextFast(
     return lines;
 }
 
-void loadProgress(App& app)
+void loadProgress(
+    App& app)
 {
     FILE* file =
         std::fopen(
@@ -1439,7 +1864,8 @@ void loadProgress(App& app)
             buffer,
             sizeof(buffer),
             file
-        ))
+        )
+    )
     {
         std::string line =
             buffer;
@@ -1449,53 +1875,122 @@ void loadProgress(App& app)
             (
                 line.back() == '\n' ||
                 line.back() == '\r'
-            ))
+            )
+        )
         {
             line.pop_back();
         }
 
-        const std::size_t separator =
-            line.find_last_of('\t');
-
         if (
-            separator ==
-            std::string::npos)
+            line.empty()
+        )
         {
             continue;
         }
 
-        const std::string filename =
-            line.substr(
+        std::vector<std::string>
+            fields;
+
+        std::size_t start =
+            0;
+
+        while (
+            start <=
+            line.size()
+        )
+        {
+            std::size_t tab =
+                line.find(
+                    '\t',
+                    start
+                );
+
+            if (
+                tab ==
+                std::string::npos
+            )
+            {
+                fields.push_back(
+                    line.substr(
+                        start
+                    )
+                );
+
+                break;
+            }
+
+            fields.push_back(
+                line.substr(
+                    start,
+                    tab - start
+                )
+            );
+
+            start =
+                tab + 1;
+        }
+
+        if (
+            fields.size() <
+            2
+        )
+        {
+            continue;
+        }
+
+        ReadingProgress progress;
+
+        /*
+         * Backwards compatibility with v0.0.5:
+         *
+         * filename<TAB>topLine
+         */
+        if (
+            fields.size() == 2
+        )
+        {
+            progress.chapterIndex =
+                0;
+
+            progress.topLine =
+                std::atoi(
+                    fields[1].c_str()
+                );
+        }
+        else
+        {
+            progress.chapterIndex =
+                std::atoi(
+                    fields[1].c_str()
+                );
+
+            progress.topLine =
+                std::atoi(
+                    fields[2].c_str()
+                );
+        }
+
+        progress.chapterIndex =
+            std::max(
                 0,
-                separator
+                progress.chapterIndex
             );
 
-        const std::string value =
-            line.substr(
-                separator + 1
+        progress.topLine =
+            std::max(
+                0,
+                progress.topLine
             );
 
-        if (
-            filename.empty() ||
-            value.empty())
-        {
-            continue;
-        }
-
-        int topLine =
-            std::atoi(
-                value.c_str()
-            );
-
-        if (topLine < 0)
-            topLine = 0;
-
-        app.savedTopLines[
-            filename
-        ] = topLine;
+        app.savedProgress[
+            fields[0]
+        ] =
+            progress;
     }
 
-    std::fclose(file);
+    std::fclose(
+        file
+    );
 }
 
 void saveProgress(
@@ -1519,33 +2014,50 @@ void saveProgress(
 
     for (
         const auto& entry :
-        app.savedTopLines)
+        app.savedProgress
+    )
     {
         std::fprintf(
             file,
-            "%s\t%d\n",
+            "%s\t%d\t%d\n",
             entry.first.c_str(),
-            entry.second
+            entry.second.chapterIndex,
+            entry.second.topLine
         );
     }
 
-    std::fclose(file);
+    std::fclose(
+        file
+    );
 }
 
 void rememberCurrentProgress(
     App& app)
 {
     if (
-        app.readerBookFilename.empty())
+        app.readerBookFilename.empty() ||
+        app.readerChapterIndex < 0
+    )
     {
         return;
     }
 
-    app.savedTopLines[
-        app.readerBookFilename
-    ] = app.readerTopLine;
+    ReadingProgress progress;
 
-    saveProgress(app);
+    progress.chapterIndex =
+        app.readerChapterIndex;
+
+    progress.topLine =
+        app.readerTopLine;
+
+    app.savedProgress[
+        app.readerBookFilename
+    ] =
+        progress;
+
+    saveProgress(
+        app
+    );
 }
 
 int maximumTopLine(
@@ -1563,8 +2075,12 @@ int maximumTopLine(
 int totalPages(
     const App& app)
 {
-    if (app.readerLines.empty())
+    if (
+        app.readerLines.empty()
+    )
+    {
         return 1;
+    }
 
     return
         (
@@ -1581,20 +2097,23 @@ int totalPages(
 int currentPage(
     const App& app)
 {
-    if (app.readerLines.empty())
+    if (
+        app.readerLines.empty()
+    )
+    {
         return 1;
+    }
 
-    const int page =
+    return std::min(
         (
             app.readerTopLine
             /
             READER_VISIBLE_LINES
         )
-        + 1;
-
-    return std::min(
-        page,
-        totalPages(app)
+        + 1,
+        totalPages(
+            app
+        )
     );
 }
 
@@ -1605,7 +2124,9 @@ void clampReaderPosition(
         std::clamp(
             app.readerTopLine,
             0,
-            maximumTopLine(app)
+            maximumTopLine(
+                app
+            )
         );
 }
 
@@ -1621,13 +2142,21 @@ std::string makeTextCacheKey(
             >(font)
         )
         + "|"
-        + std::to_string(color.r)
+        + std::to_string(
+            color.r
+        )
         + "|"
-        + std::to_string(color.g)
+        + std::to_string(
+            color.g
+        )
         + "|"
-        + std::to_string(color.b)
+        + std::to_string(
+            color.b
+        )
         + "|"
-        + std::to_string(color.a)
+        + std::to_string(
+            color.a
+        )
         + "|"
         + text;
 }
@@ -1646,13 +2175,17 @@ CachedText* getCachedText(
         );
 
     auto existing =
-        app.textCache.find(key);
+        app.textCache.find(
+            key
+        );
 
     if (
         existing !=
-        app.textCache.end())
+        app.textCache.end()
+    )
     {
-        return &existing->second;
+        return
+            &existing->second;
     }
 
     SDL_Surface* surface =
@@ -1673,18 +2206,27 @@ CachedText* getCachedText(
 
     if (!texture)
     {
-        SDL_FreeSurface(surface);
+        SDL_FreeSurface(
+            surface
+        );
 
         return nullptr;
     }
 
     CachedText cached;
 
-    cached.texture = texture;
-    cached.width = surface->w;
-    cached.height = surface->h;
+    cached.texture =
+        texture;
 
-    SDL_FreeSurface(surface);
+    cached.width =
+        surface->w;
+
+    cached.height =
+        surface->h;
+
+    SDL_FreeSurface(
+        surface
+    );
 
     auto result =
         app.textCache.emplace(
@@ -1692,7 +2234,8 @@ CachedText* getCachedText(
             cached
         );
 
-    return &result.first->second;
+    return
+        &result.first->second;
 }
 
 void drawText(
@@ -1703,8 +2246,12 @@ void drawText(
     int y,
     SDL_Color color)
 {
-    if (text.empty())
+    if (
+        text.empty()
+    )
+    {
         return;
+    }
 
     CachedText* cached =
         getCachedText(
@@ -1738,9 +2285,12 @@ void clearTextCache(
 {
     for (
         auto& entry :
-        app.textCache)
+        app.textCache
+    )
     {
-        if (entry.second.texture)
+        if (
+            entry.second.texture
+        )
         {
             SDL_DestroyTexture(
                 entry.second.texture
@@ -1749,54 +2299,6 @@ void clearTextCache(
     }
 
     app.textCache.clear();
-}
-
-void beginOpenSelectedBook(
-    App& app)
-{
-    if (app.books.empty())
-        return;
-
-    if (
-        app.selected < 0 ||
-        app.selected >=
-            static_cast<int>(
-                app.books.size()
-            ))
-    {
-        return;
-    }
-
-    const Book& book =
-        app.books[
-            app.selected
-        ];
-
-    if (!book.valid)
-        return;
-
-    app.pendingBookIndex =
-        app.selected;
-
-    app.pendingDocument =
-        ReaderDocument{};
-
-    app.loadingStage =
-        LoadingStage::OpenBook;
-
-    app.loadingMessage =
-        "Opening EPUB...";
-
-    app.loadingDetail =
-        "Reading package and chapter structure";
-
-    app.loadingWarmupFrames =
-        0;
-
-    app.screen =
-        Screen::Loading;
-
-    clearTextCache(app);
 }
 
 void loadingFailed(
@@ -1821,21 +2323,167 @@ void loadingFailed(
     );
 }
 
+void scheduleChapterLoad(
+    App& app,
+    int chapterIndex,
+    ChapterPosition position,
+    int restoreTopLine,
+    int searchDirection,
+    Screen returnScreen)
+{
+    if (
+        chapterIndex < 0 ||
+        chapterIndex >=
+            static_cast<int>(
+                app.readerChapterPaths.size()
+            )
+    )
+    {
+        return;
+    }
+
+    app.pendingChapterIndex =
+        chapterIndex;
+
+    app.pendingChapterPosition =
+        position;
+
+    app.pendingRestoreTopLine =
+        restoreTopLine;
+
+    app.pendingSearchDirection =
+        searchDirection >= 0
+        ? 1
+        : -1;
+
+    app.pendingChapter =
+        ChapterDocument{};
+
+    app.loadingStage =
+        LoadingStage::LoadChapter;
+
+    app.loadingReturnScreen =
+        returnScreen;
+
+    app.loadingMessage =
+        "Loading chapter...";
+
+    app.loadingDetail =
+        "Chapter "
+        + std::to_string(
+            chapterIndex + 1
+        )
+        + "/"
+        + std::to_string(
+            app.readerChapterPaths.size()
+        );
+
+    app.loadingWarmupFrames =
+        0;
+
+    app.screen =
+        Screen::Loading;
+
+    clearTextCache(
+        app
+    );
+}
+
+void beginOpenSelectedBook(
+    App& app)
+{
+    if (
+        app.books.empty()
+    )
+    {
+        return;
+    }
+
+    if (
+        app.selected < 0 ||
+        app.selected >=
+            static_cast<int>(
+                app.books.size()
+            )
+    )
+    {
+        return;
+    }
+
+    const Book& book =
+        app.books[
+            app.selected
+        ];
+
+    if (!book.valid)
+        return;
+
+    app.pendingBookIndex =
+        app.selected;
+
+    app.readerBookFilename.clear();
+    app.readerTitle.clear();
+    app.readerChapterPaths.clear();
+
+    app.readerChapterIndex =
+        -1;
+
+    app.readerCurrentChapterPath.clear();
+    app.readerLines.clear();
+
+    app.readerTopLine =
+        0;
+
+    app.loadingStage =
+        LoadingStage::OpenStructure;
+
+    app.loadingReturnScreen =
+        Screen::Library;
+
+    app.loadingMessage =
+        "Opening EPUB...";
+
+    app.loadingDetail =
+        "Reading book structure";
+
+    app.loadingWarmupFrames =
+        0;
+
+    app.screen =
+        Screen::Loading;
+
+    clearTextCache(
+        app
+    );
+}
+
 void processLoadingStage(
     App& app)
 {
     if (
         app.screen !=
-        Screen::Loading)
+        Screen::Loading
+    )
+    {
+        return;
+    }
+
+    if (
+        app.loadingStage ==
+        LoadingStage::Error
+    )
     {
         return;
     }
 
     /*
-     * Give SDL a couple of frames to actually display
-     * the loading screen before doing blocking work.
+     * Let the loading UI actually reach the framebuffer
+     * before doing blocking work.
      */
-    if (app.loadingWarmupFrames < 2)
+    if (
+        app.loadingWarmupFrames <
+        2
+    )
     {
         ++app.loadingWarmupFrames;
 
@@ -1844,14 +2492,16 @@ void processLoadingStage(
 
     if (
         app.loadingStage ==
-        LoadingStage::OpenBook)
+        LoadingStage::OpenStructure
+    )
     {
         if (
             app.pendingBookIndex < 0 ||
             app.pendingBookIndex >=
                 static_cast<int>(
                     app.books.size()
-                ))
+                )
+        )
         {
             loadingFailed(
                 app,
@@ -1869,8 +2519,8 @@ void processLoadingStage(
         const Uint32 startTime =
             SDL_GetTicks();
 
-        app.pendingDocument =
-            loadReaderDocument(
+        ReaderStructure structure =
+            loadReaderStructure(
                 book
             );
 
@@ -1879,72 +2529,17 @@ void processLoadingStage(
             - startTime;
 
         std::printf(
-            "EPUB parsing took %u ms\n",
+            "Spine parsing took %u ms\n",
             static_cast<unsigned>(
                 elapsed
             )
         );
 
-        if (!app.pendingDocument.valid)
+        if (!structure.valid)
         {
             loadingFailed(
                 app,
-                app.pendingDocument.error
-            );
-
-            return;
-        }
-
-        app.loadingStage =
-            LoadingStage::Layout;
-
-        app.loadingMessage =
-            "Preparing pages...";
-
-        app.loadingDetail =
-            "Calculating text layout for 480x272";
-
-        app.loadingWarmupFrames =
-            0;
-
-        return;
-    }
-
-    if (
-        app.loadingStage ==
-        LoadingStage::Layout)
-    {
-        const Book& book =
-            app.books[
-                app.pendingBookIndex
-            ];
-
-        const Uint32 startTime =
-            SDL_GetTicks();
-
-        std::vector<std::string> lines =
-            wrapTextFast(
-                app.fontReader,
-                app.pendingDocument.text,
-                436
-            );
-
-        const Uint32 elapsed =
-            SDL_GetTicks()
-            - startTime;
-
-        std::printf(
-            "Text layout took %u ms\n",
-            static_cast<unsigned>(
-                elapsed
-            )
-        );
-
-        if (lines.empty())
-        {
-            loadingFailed(
-                app,
-                "No readable text after layout"
+                structure.error
             );
 
             return;
@@ -1954,51 +2549,301 @@ void processLoadingStage(
             book.filename;
 
         app.readerTitle =
-            app.pendingDocument.title;
+            book.title;
 
-        app.readerChapterPath =
-            app.pendingDocument.chapterPath;
+        app.readerChapterPaths =
+            std::move(
+                structure.chapterPaths
+            );
 
-        app.readerLines =
-            std::move(lines);
-
-        app.readerTopLine =
-            0;
+        ReadingProgress progress;
 
         auto saved =
-            app.savedTopLines.find(
+            app.savedProgress.find(
                 book.filename
             );
 
         if (
             saved !=
-            app.savedTopLines.end())
+            app.savedProgress.end()
+        )
         {
-            app.readerTopLine =
+            progress =
                 saved->second;
         }
 
-        clampReaderPosition(app);
+        progress.chapterIndex =
+            std::clamp(
+                progress.chapterIndex,
+                0,
+                static_cast<int>(
+                    app.readerChapterPaths.size()
+                ) - 1
+            );
 
-        std::printf(
-            "Opened chapter: %s\n",
-            app.readerChapterPath.c_str()
+        scheduleChapterLoad(
+            app,
+            progress.chapterIndex,
+            ChapterPosition::Restore,
+            progress.topLine,
+            1,
+            Screen::Library
         );
 
-        std::printf(
-            "Wrapped into %zu lines\n",
-            app.readerLines.size()
-        );
+        return;
+    }
+
+    if (
+        app.loadingStage ==
+        LoadingStage::LoadChapter
+    )
+    {
+        if (
+            app.pendingBookIndex < 0 ||
+            app.pendingBookIndex >=
+                static_cast<int>(
+                    app.books.size()
+                )
+        )
+        {
+            loadingFailed(
+                app,
+                "Invalid book index"
+            );
+
+            return;
+        }
+
+        if (
+            app.pendingChapterIndex < 0 ||
+            app.pendingChapterIndex >=
+                static_cast<int>(
+                    app.readerChapterPaths.size()
+                )
+        )
+        {
+            loadingFailed(
+                app,
+                "Invalid chapter index"
+            );
+
+            return;
+        }
+
+        const Book& book =
+            app.books[
+                app.pendingBookIndex
+            ];
+
+        const std::string& chapterPath =
+            app.readerChapterPaths[
+                app.pendingChapterIndex
+            ];
+
+        const Uint32 startTime =
+            SDL_GetTicks();
+
+        ChapterDocument chapter =
+            loadChapterDocument(
+                book,
+                chapterPath
+            );
+
+        const Uint32 elapsed =
+            SDL_GetTicks()
+            - startTime;
 
         std::printf(
-            "Restored top line: %d\n",
-            app.readerTopLine
+            "Chapter load took %u ms: %s\n",
+            static_cast<unsigned>(
+                elapsed
+            ),
+            chapterPath.c_str()
         );
 
-        app.pendingDocument =
-            ReaderDocument{};
+        if (!chapter.valid)
+        {
+            const int nextIndex =
+                app.pendingChapterIndex
+                + app.pendingSearchDirection;
 
-        app.pendingBookIndex =
+            if (
+                nextIndex >= 0 &&
+                nextIndex <
+                    static_cast<int>(
+                        app.readerChapterPaths.size()
+                    )
+            )
+            {
+                const ChapterPosition nextPosition =
+                    app.pendingSearchDirection > 0
+                    ? ChapterPosition::Start
+                    : ChapterPosition::End;
+
+                scheduleChapterLoad(
+                    app,
+                    nextIndex,
+                    nextPosition,
+                    0,
+                    app.pendingSearchDirection,
+                    app.loadingReturnScreen
+                );
+
+                return;
+            }
+
+            loadingFailed(
+                app,
+                chapter.error
+            );
+
+            return;
+        }
+
+        app.pendingChapter =
+            std::move(
+                chapter
+            );
+
+        app.loadingStage =
+            LoadingStage::Layout;
+
+        app.loadingMessage =
+            "Preparing pages...";
+
+        app.loadingDetail =
+            "Chapter "
+            + std::to_string(
+                app.pendingChapterIndex + 1
+            )
+            + "/"
+            + std::to_string(
+                app.readerChapterPaths.size()
+            );
+
+        app.loadingWarmupFrames =
+            0;
+
+        return;
+    }
+
+    if (
+        app.loadingStage ==
+        LoadingStage::Layout
+    )
+    {
+        const Uint32 startTime =
+            SDL_GetTicks();
+
+        std::vector<std::string> lines =
+            wrapTextFast(
+                app.fontReader,
+                app.pendingChapter.text,
+                436
+            );
+
+        const Uint32 elapsed =
+            SDL_GetTicks()
+            - startTime;
+
+        std::printf(
+            "Chapter layout took %u ms\n",
+            static_cast<unsigned>(
+                elapsed
+            )
+        );
+
+        if (
+            lines.empty()
+        )
+        {
+            const int nextIndex =
+                app.pendingChapterIndex
+                + app.pendingSearchDirection;
+
+            if (
+                nextIndex >= 0 &&
+                nextIndex <
+                    static_cast<int>(
+                        app.readerChapterPaths.size()
+                    )
+            )
+            {
+                const ChapterPosition nextPosition =
+                    app.pendingSearchDirection > 0
+                    ? ChapterPosition::Start
+                    : ChapterPosition::End;
+
+                scheduleChapterLoad(
+                    app,
+                    nextIndex,
+                    nextPosition,
+                    0,
+                    app.pendingSearchDirection,
+                    app.loadingReturnScreen
+                );
+
+                return;
+            }
+
+            loadingFailed(
+                app,
+                "Chapter produced no text"
+            );
+
+            return;
+        }
+
+        app.readerLines =
+            std::move(
+                lines
+            );
+
+        app.readerChapterIndex =
+            app.pendingChapterIndex;
+
+        app.readerCurrentChapterPath =
+            app.pendingChapter.path;
+
+        switch (
+            app.pendingChapterPosition
+        )
+        {
+            case ChapterPosition::Start:
+            {
+                app.readerTopLine =
+                    0;
+
+                break;
+            }
+
+            case ChapterPosition::End:
+            {
+                app.readerTopLine =
+                    maximumTopLine(
+                        app
+                    );
+
+                break;
+            }
+
+            case ChapterPosition::Restore:
+            {
+                app.readerTopLine =
+                    app.pendingRestoreTopLine;
+
+                clampReaderPosition(
+                    app
+                );
+
+                break;
+            }
+        }
+
+        app.pendingChapter =
+            ChapterDocument{};
+
+        app.pendingChapterIndex =
             -1;
 
         app.loadingStage =
@@ -2010,28 +2855,62 @@ void processLoadingStage(
         app.screen =
             Screen::Reader;
 
-        clearTextCache(app);
+        clearTextCache(
+            app
+        );
+
+        std::printf(
+            "Now reading chapter %d/%zu: %s\n",
+            app.readerChapterIndex + 1,
+            app.readerChapterPaths.size(),
+            app.readerCurrentChapterPath.c_str()
+        );
+
+        std::printf(
+            "Wrapped into %zu lines, top=%d\n",
+            app.readerLines.size(),
+            app.readerTopLine
+        );
     }
 }
 
 void closeReader(
     App& app)
 {
-    rememberCurrentProgress(app);
+    rememberCurrentProgress(
+        app
+    );
 
     app.screen =
         Screen::Library;
 
     app.readerBookFilename.clear();
     app.readerTitle.clear();
-    app.readerChapterPath.clear();
+
+    app.readerChapterPaths.clear();
+
+    app.readerChapterIndex =
+        -1;
+
+    app.readerCurrentChapterPath.clear();
 
     app.readerLines.clear();
 
     app.readerTopLine =
         0;
 
-    clearTextCache(app);
+    app.pendingBookIndex =
+        -1;
+
+    app.pendingChapterIndex =
+        -1;
+
+    app.pendingChapter =
+        ChapterDocument{};
+
+    clearTextCache(
+        app
+    );
 }
 
 bool initialize(
@@ -2041,7 +2920,8 @@ bool initialize(
         SDL_Init(
             SDL_INIT_VIDEO |
             SDL_INIT_GAMECONTROLLER
-        ) != 0)
+        ) != 0
+    )
     {
         std::printf(
             "SDL_Init failed: %s\n",
@@ -2051,7 +2931,9 @@ bool initialize(
         return false;
     }
 
-    if (TTF_Init() != 0)
+    if (
+        TTF_Init() != 0
+    )
     {
         std::printf(
             "TTF_Init failed: %s\n",
@@ -2091,18 +2973,25 @@ bool initialize(
     );
 
     app.fontNormal =
-        loadFont(17);
+        loadFont(
+            17
+        );
 
     app.fontSmall =
-        loadFont(12);
+        loadFont(
+            12
+        );
 
     app.fontReader =
-        loadFont(14);
+        loadFont(
+            14
+        );
 
     if (
         !app.fontNormal ||
         !app.fontSmall ||
-        !app.fontReader)
+        !app.fontReader
+    )
     {
         std::printf(
             "Could not load font: %s\n",
@@ -2115,19 +3004,34 @@ bool initialize(
     for (
         int i = 0;
         i < SDL_NumJoysticks();
-        ++i)
+        ++i
+    )
     {
-        if (!SDL_IsGameController(i))
+        if (
+            !SDL_IsGameController(
+                i
+            )
+        )
+        {
             continue;
+        }
 
         app.controller =
-            SDL_GameControllerOpen(i);
+            SDL_GameControllerOpen(
+                i
+            );
 
-        if (app.controller)
+        if (
+            app.controller
+        )
+        {
             break;
+        }
     }
 
-    loadProgress(app);
+    loadProgress(
+        app
+    );
 
     app.books =
         scanBooks();
@@ -2139,7 +3043,7 @@ bool initialize(
 
     std::printf(
         "Loaded progress for %zu book(s)\n",
-        app.savedTopLines.size()
+        app.savedProgress.size()
     );
 
     return true;
@@ -2149,25 +3053,179 @@ void moveReaderByLines(
     App& app,
     int delta)
 {
+    if (
+        delta > 0 &&
+        app.readerTopLine >=
+            maximumTopLine(
+                app
+            )
+    )
+    {
+        const int nextChapter =
+            app.readerChapterIndex + 1;
+
+        if (
+            nextChapter <
+            static_cast<int>(
+                app.readerChapterPaths.size()
+            )
+        )
+        {
+            rememberCurrentProgress(
+                app
+            );
+
+            scheduleChapterLoad(
+                app,
+                nextChapter,
+                ChapterPosition::Start,
+                0,
+                1,
+                Screen::Reader
+            );
+        }
+
+        return;
+    }
+
+    if (
+        delta < 0 &&
+        app.readerTopLine <= 0
+    )
+    {
+        const int previousChapter =
+            app.readerChapterIndex - 1;
+
+        if (
+            previousChapter >= 0
+        )
+        {
+            rememberCurrentProgress(
+                app
+            );
+
+            scheduleChapterLoad(
+                app,
+                previousChapter,
+                ChapterPosition::End,
+                0,
+                -1,
+                Screen::Reader
+            );
+        }
+
+        return;
+    }
+
     app.readerTopLine +=
         delta;
 
-    clampReaderPosition(app);
+    clampReaderPosition(
+        app
+    );
 
-    clearTextCache(app);
+    clearTextCache(
+        app
+    );
 }
 
 void moveReaderByPage(
     App& app,
     int direction)
 {
-    app.readerTopLine +=
-        direction
-        * READER_VISIBLE_LINES;
+    if (
+        direction > 0
+    )
+    {
+        const int maxTop =
+            maximumTopLine(
+                app
+            );
 
-    clampReaderPosition(app);
+        if (
+            app.readerTopLine <
+            maxTop
+        )
+        {
+            app.readerTopLine =
+                std::min(
+                    app.readerTopLine
+                        + READER_VISIBLE_LINES,
+                    maxTop
+                );
 
-    clearTextCache(app);
+            clearTextCache(
+                app
+            );
+
+            return;
+        }
+
+        const int nextChapter =
+            app.readerChapterIndex + 1;
+
+        if (
+            nextChapter <
+            static_cast<int>(
+                app.readerChapterPaths.size()
+            )
+        )
+        {
+            rememberCurrentProgress(
+                app
+            );
+
+            scheduleChapterLoad(
+                app,
+                nextChapter,
+                ChapterPosition::Start,
+                0,
+                1,
+                Screen::Reader
+            );
+        }
+
+        return;
+    }
+
+    if (
+        app.readerTopLine > 0
+    )
+    {
+        app.readerTopLine =
+            std::max(
+                0,
+                app.readerTopLine
+                    - READER_VISIBLE_LINES
+            );
+
+        clearTextCache(
+            app
+        );
+
+        return;
+    }
+
+    const int previousChapter =
+        app.readerChapterIndex - 1;
+
+    if (
+        previousChapter >= 0
+    )
+    {
+        rememberCurrentProgress(
+            app
+        );
+
+        scheduleChapterLoad(
+            app,
+            previousChapter,
+            ChapterPosition::End,
+            0,
+            -1,
+            Screen::Reader
+        );
+    }
 }
 
 void handleLibraryButton(
@@ -2178,16 +3236,21 @@ void handleLibraryButton(
     {
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
         {
-            if (!app.books.empty())
+            if (
+                !app.books.empty()
+            )
             {
                 --app.selected;
 
-                if (app.selected < 0)
+                if (
+                    app.selected < 0
+                )
                 {
                     app.selected =
                         static_cast<int>(
                             app.books.size()
-                        ) - 1;
+                        )
+                        - 1;
                 }
             }
 
@@ -2196,7 +3259,9 @@ void handleLibraryButton(
 
         case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
         {
-            if (!app.books.empty())
+            if (
+                !app.books.empty()
+            )
             {
                 ++app.selected;
 
@@ -2204,9 +3269,11 @@ void handleLibraryButton(
                     app.selected >=
                     static_cast<int>(
                         app.books.size()
-                    ))
+                    )
+                )
                 {
-                    app.selected = 0;
+                    app.selected =
+                        0;
                 }
             }
 
@@ -2215,14 +3282,17 @@ void handleLibraryButton(
 
         case SDL_CONTROLLER_BUTTON_A:
         {
-            beginOpenSelectedBook(app);
+            beginOpenSelectedBook(
+                app
+            );
 
             break;
         }
 
         case SDL_CONTROLLER_BUTTON_START:
         {
-            app.running = false;
+            app.running =
+                false;
 
             break;
         }
@@ -2232,40 +3302,74 @@ void handleLibraryButton(
     }
 }
 
+void cancelLoading(
+    App& app)
+{
+    app.loadingStage =
+        LoadingStage::None;
+
+    app.loadingMessage.clear();
+    app.loadingDetail.clear();
+
+    app.pendingChapter =
+        ChapterDocument{};
+
+    app.pendingChapterIndex =
+        -1;
+
+    if (
+        app.loadingReturnScreen ==
+        Screen::Reader &&
+        !app.readerLines.empty()
+    )
+    {
+        app.screen =
+            Screen::Reader;
+    }
+    else
+    {
+        app.screen =
+            Screen::Library;
+    }
+
+    clearTextCache(
+        app
+    );
+}
+
 void handleLoadingButton(
     App& app,
     Uint8 button)
 {
     if (
         button ==
-        SDL_CONTROLLER_BUTTON_B)
+        SDL_CONTROLLER_BUTTON_B
+    )
     {
-        /*
-         * Can cancel while waiting between stages,
-         * or dismiss an error.
-         */
-        app.pendingBookIndex =
-            -1;
+        cancelLoading(
+            app
+        );
 
-        app.pendingDocument =
-            ReaderDocument{};
-
-        app.loadingStage =
-            LoadingStage::None;
-
-        app.loadingMessage.clear();
-        app.loadingDetail.clear();
-
-        app.screen =
-            Screen::Library;
-
-        clearTextCache(app);
+        return;
     }
-    else if (
+
+    if (
         button ==
-        SDL_CONTROLLER_BUTTON_START)
+        SDL_CONTROLLER_BUTTON_START
+    )
     {
-        app.running = false;
+        if (
+            !app.readerBookFilename.empty() &&
+            app.readerChapterIndex >= 0
+        )
+        {
+            rememberCurrentProgress(
+                app
+            );
+        }
+
+        app.running =
+            false;
     }
 }
 
@@ -2317,16 +3421,21 @@ void handleReaderButton(
 
         case SDL_CONTROLLER_BUTTON_B:
         {
-            closeReader(app);
+            closeReader(
+                app
+            );
 
             break;
         }
 
         case SDL_CONTROLLER_BUTTON_START:
         {
-            rememberCurrentProgress(app);
+            rememberCurrentProgress(
+                app
+            );
 
-            app.running = false;
+            app.running =
+                false;
 
             break;
         }
@@ -2342,29 +3451,40 @@ void handleInput(
     SDL_Event event;
 
     while (
-        SDL_PollEvent(&event))
+        SDL_PollEvent(
+            &event
+        )
+    )
     {
         if (
             event.type ==
-            SDL_QUIT)
+            SDL_QUIT
+        )
         {
             if (
-                app.screen ==
-                Screen::Reader)
+                !app.readerBookFilename.empty() &&
+                app.readerChapterIndex >= 0
+            )
             {
-                rememberCurrentProgress(app);
+                rememberCurrentProgress(
+                    app
+                );
             }
 
-            app.running = false;
+            app.running =
+                false;
 
             continue;
         }
 
         if (
             event.type ==
-            SDL_CONTROLLERDEVICEADDED)
+            SDL_CONTROLLERDEVICEADDED
+        )
         {
-            if (!app.controller)
+            if (
+                !app.controller
+            )
             {
                 app.controller =
                     SDL_GameControllerOpen(
@@ -2377,33 +3497,45 @@ void handleInput(
 
         if (
             event.type !=
-            SDL_CONTROLLERBUTTONDOWN)
+            SDL_CONTROLLERBUTTONDOWN
+        )
         {
             continue;
         }
 
-        switch (app.screen)
+        switch (
+            app.screen
+        )
         {
             case Screen::Library:
+            {
                 handleLibraryButton(
                     app,
                     event.cbutton.button
                 );
+
                 break;
+            }
 
             case Screen::Loading:
+            {
                 handleLoadingButton(
                     app,
                     event.cbutton.button
                 );
+
                 break;
+            }
 
             case Screen::Reader:
+            {
                 handleReaderButton(
                     app,
                     event.cbutton.button
                 );
+
                 break;
+            }
         }
     }
 }
@@ -2437,7 +3569,9 @@ void renderLibrary(
         background.a
     );
 
-    SDL_RenderClear(app.renderer);
+    SDL_RenderClear(
+        app.renderer
+    );
 
     SDL_Rect header
     {
@@ -2478,7 +3612,9 @@ void renderLibrary(
         muted
     );
 
-    if (app.books.empty())
+    if (
+        app.books.empty()
+    )
     {
         drawText(
             app,
@@ -2500,13 +3636,22 @@ void renderLibrary(
     }
     else
     {
-        constexpr int firstY = 57;
-        constexpr int rowHeight = 43;
-        constexpr int visibleBooks = 4;
+        constexpr int firstY =
+            57;
 
-        int firstBook = 0;
+        constexpr int rowHeight =
+            43;
 
-        if (app.selected >= visibleBooks)
+        constexpr int visibleBooks =
+            4;
+
+        int firstBook =
+            0;
+
+        if (
+            app.selected >=
+            visibleBooks
+        )
         {
             firstBook =
                 app.selected
@@ -2517,32 +3662,40 @@ void renderLibrary(
         for (
             int row = 0;
             row < visibleBooks;
-            ++row)
+            ++row
+        )
         {
             const int index =
-                firstBook + row;
+                firstBook
+                + row;
 
             if (
                 index >=
                 static_cast<int>(
                     app.books.size()
-                ))
+                )
+            )
             {
                 break;
             }
 
             const int y =
                 firstY
-                + row * rowHeight;
+                + row
+                * rowHeight;
 
             const Book& book =
-                app.books[index];
+                app.books[
+                    index
+                ];
 
             const bool isSelected =
                 index ==
                 app.selected;
 
-            if (isSelected)
+            if (
+                isSelected
+            )
             {
                 SDL_Rect selection
                 {
@@ -2622,7 +3775,9 @@ void renderLibrary(
         muted
     );
 
-    SDL_RenderPresent(app.renderer);
+    SDL_RenderPresent(
+        app.renderer
+    );
 }
 
 void renderLoading(
@@ -2651,7 +3806,9 @@ void renderLoading(
         background.a
     );
 
-    SDL_RenderClear(app.renderer);
+    SDL_RenderClear(
+        app.renderer
+    );
 
     SDL_Rect header
     {
@@ -2683,24 +3840,32 @@ void renderLoading(
         text
     );
 
+    std::string bookTitle =
+        app.readerTitle;
+
     if (
+        bookTitle.empty() &&
         app.pendingBookIndex >= 0 &&
         app.pendingBookIndex <
             static_cast<int>(
                 app.books.size()
-            ))
+            )
+    )
     {
-        drawText(
-            app,
-            app.fontSmall,
+        bookTitle =
             app.books[
                 app.pendingBookIndex
-            ].title,
-            24,
-            78,
-            muted
-        );
+            ].title;
     }
+
+    drawText(
+        app,
+        app.fontSmall,
+        bookTitle,
+        24,
+        78,
+        muted
+    );
 
     const bool isError =
         app.loadingStage ==
@@ -2728,30 +3893,20 @@ void renderLoading(
             : muted
     );
 
-    if (isError)
-    {
-        drawText(
-            app,
-            app.fontSmall,
-            "O Back",
-            24,
-            248,
-            muted
-        );
-    }
-    else
-    {
-        drawText(
-            app,
-            app.fontSmall,
-            "Please wait...",
-            24,
-            248,
-            muted
-        );
-    }
+    drawText(
+        app,
+        app.fontSmall,
+        isError
+            ? "O Back"
+            : "Please wait...",
+        24,
+        248,
+        muted
+    );
 
-    SDL_RenderPresent(app.renderer);
+    SDL_RenderPresent(
+        app.renderer
+    );
 }
 
 void renderReader(
@@ -2777,7 +3932,9 @@ void renderReader(
         background.a
     );
 
-    SDL_RenderClear(app.renderer);
+    SDL_RenderClear(
+        app.renderer
+    );
 
     SDL_Rect headerRect
     {
@@ -2809,12 +3966,33 @@ void renderReader(
         text
     );
 
-    int y = 45;
+    const std::string chapterIndicator =
+        std::to_string(
+            app.readerChapterIndex + 1
+        )
+        + "/"
+        + std::to_string(
+            app.readerChapterPaths.size()
+        );
+
+    drawText(
+        app,
+        app.fontSmall,
+        chapterIndicator,
+        430,
+        10,
+        muted
+    );
+
+    int y =
+        45;
 
     for (
         int row = 0;
-        row < READER_VISIBLE_LINES;
-        ++row)
+        row <
+            READER_VISIBLE_LINES;
+        ++row
+    )
     {
         const int index =
             app.readerTopLine
@@ -2824,7 +4002,8 @@ void renderReader(
             index >=
             static_cast<int>(
                 app.readerLines.size()
-            ))
+            )
+        )
         {
             break;
         }
@@ -2832,7 +4011,9 @@ void renderReader(
         drawText(
             app,
             app.fontReader,
-            app.readerLines[index],
+            app.readerLines[
+                index
+            ],
             22,
             y,
             text
@@ -2845,11 +4026,15 @@ void renderReader(
     const std::string progress =
         "Page "
         + std::to_string(
-            currentPage(app)
+            currentPage(
+                app
+            )
         )
         + "/"
         + std::to_string(
-            totalPages(app)
+            totalPages(
+                app
+            )
         );
 
     drawText(
@@ -2870,74 +4055,112 @@ void renderReader(
         muted
     );
 
-    SDL_RenderPresent(app.renderer);
+    SDL_RenderPresent(
+        app.renderer
+    );
 }
 
-void render(App& app)
+void render(
+    App& app)
 {
-    switch (app.screen)
+    switch (
+        app.screen
+    )
     {
         case Screen::Library:
-            renderLibrary(app);
+        {
+            renderLibrary(
+                app
+            );
+
             break;
+        }
 
         case Screen::Loading:
-            renderLoading(app);
+        {
+            renderLoading(
+                app
+            );
+
             break;
+        }
 
         case Screen::Reader:
-            renderReader(app);
+        {
+            renderReader(
+                app
+            );
+
             break;
+        }
     }
 }
 
-void shutdown(App& app)
+void shutdown(
+    App& app)
 {
     if (
-        app.screen ==
-        Screen::Reader)
+        !app.readerBookFilename.empty() &&
+        app.readerChapterIndex >= 0
+    )
     {
-        rememberCurrentProgress(app);
+        rememberCurrentProgress(
+            app
+        );
     }
 
-    clearTextCache(app);
+    clearTextCache(
+        app
+    );
 
-    if (app.controller)
+    if (
+        app.controller
+    )
     {
         SDL_GameControllerClose(
             app.controller
         );
     }
 
-    if (app.fontReader)
+    if (
+        app.fontReader
+    )
     {
         TTF_CloseFont(
             app.fontReader
         );
     }
 
-    if (app.fontSmall)
+    if (
+        app.fontSmall
+    )
     {
         TTF_CloseFont(
             app.fontSmall
         );
     }
 
-    if (app.fontNormal)
+    if (
+        app.fontNormal
+    )
     {
         TTF_CloseFont(
             app.fontNormal
         );
     }
 
-    if (app.renderer)
+    if (
+        app.renderer
+    )
     {
         SDL_DestroyRenderer(
             app.renderer
         );
     }
 
-    if (app.window)
+    if (
+        app.window
+    )
     {
         SDL_DestroyWindow(
             app.window
@@ -2959,34 +4182,49 @@ int main(
 
     App app;
 
-    if (!initialize(app))
+    if (
+        !initialize(
+            app
+        )
+    )
     {
-        shutdown(app);
+        shutdown(
+            app
+        );
 
         return 1;
     }
 
-    while (app.running)
+    while (
+        app.running
+    )
     {
-        handleInput(app);
+        handleInput(
+            app
+        );
 
-        render(app);
+        render(
+            app
+        );
 
-        /*
-         * Heavy EPUB work happens only after the loading
-         * screen has been presented for a few frames.
-         */
         if (
             app.screen ==
-            Screen::Loading)
+            Screen::Loading
+        )
         {
-            processLoadingStage(app);
+            processLoadingStage(
+                app
+            );
         }
 
-        SDL_Delay(16);
+        SDL_Delay(
+            16
+        );
     }
 
-    shutdown(app);
+    shutdown(
+        app
+    );
 
     return 0;
 }
