@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(LarpReader
-    VERSION 0.0.7
+    VERSION 0.0.9
     LANGUAGES C CXX
 )
 
@@ -12,12 +12,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(SDL2 REQUIRED sdl2)
+pkg_check_modules(SDL2_IMAGE REQUIRED SDL2_image)
 pkg_check_modules(SDL2_TTF REQUIRED SDL2_ttf)
 pkg_check_modules(TINYXML2 REQUIRED tinyxml2)
 
 foreach(flag_var
     SDL2_CFLAGS_OTHER
     SDL2_LDFLAGS_OTHER
+
+    SDL2_IMAGE_CFLAGS_OTHER
+    SDL2_IMAGE_LDFLAGS_OTHER
 
     SDL2_TTF_CFLAGS_OTHER
     SDL2_TTF_LDFLAGS_OTHER
@@ -85,6 +89,7 @@ add_executable(larpreader
 
 target_include_directories(larpreader PRIVATE
     ${SDL2_INCLUDE_DIRS}
+    ${SDL2_IMAGE_INCLUDE_DIRS}
     ${SDL2_TTF_INCLUDE_DIRS}
     ${TINYXML2_INCLUDE_DIRS}
 )
@@ -94,18 +99,21 @@ target_compile_options(larpreader PRIVATE
     -Wextra
 
     ${SDL2_CFLAGS_OTHER}
+    ${SDL2_IMAGE_CFLAGS_OTHER}
     ${SDL2_TTF_CFLAGS_OTHER}
     ${TINYXML2_CFLAGS_OTHER}
 )
 
 target_link_options(larpreader PRIVATE
     ${SDL2_LDFLAGS_OTHER}
+    ${SDL2_IMAGE_LDFLAGS_OTHER}
     ${SDL2_TTF_LDFLAGS_OTHER}
     ${TINYXML2_LDFLAGS_OTHER}
 )
 
 target_link_libraries(larpreader PRIVATE
     ${SDL2_TTF_LIBRARIES}
+    ${SDL2_IMAGE_LIBRARIES}
     ${SDL2_LIBRARIES}
 
     ${LIBZIP_LIBRARY}
@@ -122,6 +130,6 @@ target_link_libraries(larpreader PRIVATE
 create_pbp_file(
     TARGET larpreader
     TITLE "Larp Reader"
-    VERSION "00.07"
+    VERSION "00.09"
     MEMSIZE 1
 )
