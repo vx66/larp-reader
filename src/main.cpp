@@ -28,6 +28,9 @@ constexpr int SCREEN_HEIGHT = 272;
 constexpr int READER_VISIBLE_LINES = 11;
 constexpr int READER_LINE_HEIGHT = 18;
 
+constexpr int TOC_VISIBLE_ITEMS = 7;
+constexpr int TOC_ROW_HEIGHT = 27;
+
 constexpr int COVER_AREA_WIDTH = 436;
 constexpr int COVER_AREA_HEIGHT = 198;
 
@@ -50,7 +53,8 @@ enum class Screen
 {
     Library,
     Loading,
-    Reader
+    Reader,
+    Toc
 };
 
 enum class LoadingStage
@@ -202,6 +206,8 @@ struct App
     int readerImageWidth = 0;
     int readerImageHeight = 0;
 
+    int tocSelected = 0;
+
     LoadingStage loadingStage =
         LoadingStage::None;
 
@@ -282,7 +288,7 @@ void resetDebugLog()
 
     std::fprintf(
         file,
-        "Larp Reader 0.0.10 debug log\n"
+        "Larp Reader 0.0.11 debug log\n"
     );
 
     std::fprintf(
@@ -496,8 +502,7 @@ void appendNodeText(
 
         if (value)
         {
-            output +=
-                value;
+            output += value;
         }
 
         return;
@@ -1420,33 +1425,31 @@ findNavToc(
         tinyxml2::XMLElement* element =
             child->ToElement();
 
-        if (element)
+        if (
+            element &&
+            std::strcmp(
+                localName(
+                    element->Name()
+                ),
+                "nav"
+            ) == 0
+        )
         {
+            const char* type =
+                attributeByLocalName(
+                    element,
+                    "type"
+                );
+
             if (
-                std::strcmp(
-                    localName(
-                        element->Name()
-                    ),
-                    "nav"
-                ) == 0
+                type &&
+                propertyContainsToken(
+                    type,
+                    "toc"
+                )
             )
             {
-                const char* type =
-                    attributeByLocalName(
-                        element,
-                        "type"
-                    );
-
-                if (
-                    type &&
-                    propertyContainsToken(
-                        type,
-                        "toc"
-                    )
-                )
-                {
-                    return element;
-                }
+                return element;
             }
         }
 
@@ -1571,9 +1574,7 @@ void collectNcxNavPoints(
             child->ToElement();
 
         if (!element)
-        {
             continue;
-        }
 
         if (
             std::strcmp(
@@ -1726,11 +1727,6 @@ void loadNavigationLabels(
             )
         )
         {
-            debugLog(
-                "Could not read NAV: %s",
-                error.c_str()
-            );
-
             continue;
         }
 
@@ -1744,11 +1740,6 @@ void loadNavigationLabels(
             tinyxml2::XML_SUCCESS
         )
         {
-            debugLog(
-                "Could not parse NAV: %s",
-                navPath.c_str()
-            );
-
             continue;
         }
 
@@ -1786,9 +1777,7 @@ void loadNavigationLabels(
         )
         : nullptr;
 
-    if (
-        tocId
-    )
+    if (tocId)
     {
         auto found =
             manifestItems.find(
@@ -1853,11 +1842,6 @@ void loadNavigationLabels(
         )
     )
     {
-        debugLog(
-            "Could not read NCX: %s",
-            error.c_str()
-        );
-
         return;
     }
 
@@ -1871,11 +1855,6 @@ void loadNavigationLabels(
         tinyxml2::XML_SUCCESS
     )
     {
-        debugLog(
-            "Could not parse NCX: %s",
-            ncxPath.c_str()
-        );
-
         return;
     }
 
@@ -1885,9 +1864,7 @@ void loadNavigationLabels(
             "navMap"
         );
 
-    if (
-        navMap
-    )
+    if (navMap)
     {
         collectNcxNavPoints(
             navMap,
@@ -2137,17 +2114,13 @@ ReaderStructure loadReaderStructure(
         manifestItem.href =
             href;
 
-        if (
-            mediaType
-        )
+        if (mediaType)
         {
             manifestItem.mediaType =
                 mediaType;
         }
 
-        if (
-            properties
-        )
+        if (properties)
         {
             manifestItem.properties =
                 properties;
@@ -2378,12 +2351,9 @@ void appendXhtmlText(
         const char* value =
             text->Value();
 
-        if (
-            value
-        )
+        if (value)
         {
-            output +=
-                value;
+            output += value;
         }
 
         return;
@@ -2392,9 +2362,7 @@ void appendXhtmlText(
     tinyxml2::XMLElement* element =
         node->ToElement();
 
-    if (
-        element
-    )
+    if (element)
     {
         const std::string name =
             localName(
@@ -2447,9 +2415,7 @@ void appendXhtmlText(
         );
     }
 
-    if (
-        element
-    )
+    if (element)
     {
         const std::string name =
             localName(
@@ -2608,9 +2574,7 @@ std::string findImageReferenceRecursive(
         tinyxml2::XMLElement* element =
             child->ToElement();
 
-        if (
-            element
-        )
+        if (element)
         {
             const std::string name =
                 localName(
@@ -2831,12 +2795,8 @@ TTF_Font* loadFont(
                 size
             );
 
-        if (
-            font
-        )
-        {
+        if (font)
             return font;
-        }
     }
 
     return nullptr;
@@ -3339,11 +3299,6 @@ bool loadImageTextureFromEpub(
     {
         error =
             IMG_GetError();
-
-        debugLog(
-            "IMG_Load_RW failed: %s",
-            error.c_str()
-        );
 
         return false;
     }
@@ -4111,6 +4066,9 @@ void beginOpenSelectedBook(
     app.readerTopLine =
         0;
 
+    app.tocSelected =
+        0;
+
     app.loadingStage =
         LoadingStage::OpenStructure;
 
@@ -4191,6 +4149,9 @@ void finishTextChapter(
         }
     }
 
+    app.tocSelected =
+        app.readerChapterIndex;
+
     app.pendingChapter =
         ChapterDocument{};
 
@@ -4243,6 +4204,9 @@ void finishImageChapter(
 
     app.readerCurrentChapterPath =
         app.pendingChapter.path;
+
+    app.tocSelected =
+        app.readerChapterIndex;
 
     app.pendingChapter =
         ChapterDocument{};
@@ -4654,6 +4618,9 @@ void closeReader(
     app.readerTopLine =
         0;
 
+    app.tocSelected =
+        0;
+
     app.pendingBookIndex =
         -1;
 
@@ -5015,6 +4982,104 @@ void moveReaderByPage(
     );
 }
 
+void openToc(
+    App& app)
+{
+    if (
+        app.readerSpine.empty()
+    )
+    {
+        return;
+    }
+
+    app.tocSelected =
+        std::clamp(
+            app.readerChapterIndex,
+            0,
+            static_cast<int>(
+                app.readerSpine.size()
+            ) - 1
+        );
+
+    app.screen =
+        Screen::Toc;
+
+    clearTextCache(
+        app
+    );
+
+    debugLog(
+        "TOC opened at item %d",
+        app.tocSelected + 1
+    );
+}
+
+void closeToc(
+    App& app)
+{
+    app.screen =
+        Screen::Reader;
+
+    clearTextCache(
+        app
+    );
+}
+
+void jumpToTocSelection(
+    App& app)
+{
+    if (
+        app.tocSelected < 0 ||
+        app.tocSelected >=
+            static_cast<int>(
+                app.readerSpine.size()
+            )
+    )
+    {
+        return;
+    }
+
+    if (
+        app.tocSelected ==
+        app.readerChapterIndex
+    )
+    {
+        closeToc(
+            app
+        );
+
+        return;
+    }
+
+    rememberCurrentProgress(
+        app
+    );
+
+    const int direction =
+        app.tocSelected >
+        app.readerChapterIndex
+        ? 1
+        : -1;
+
+    debugLog(
+        "TOC jump: %d -> %d (%s)",
+        app.readerChapterIndex + 1,
+        app.tocSelected + 1,
+        app.readerSpine[
+            app.tocSelected
+        ].title.c_str()
+    );
+
+    scheduleChapterLoad(
+        app,
+        app.tocSelected,
+        ChapterPosition::Start,
+        0,
+        direction,
+        Screen::Reader
+    );
+}
+
 void handleLibraryButton(
     App& app,
     Uint8 button)
@@ -5213,9 +5278,112 @@ void handleReaderButton(
             break;
         }
 
+        case SDL_CONTROLLER_BUTTON_Y:
+        {
+            openToc(
+                app
+            );
+
+            break;
+        }
+
         case SDL_CONTROLLER_BUTTON_B:
         {
             closeReader(
+                app
+            );
+
+            break;
+        }
+
+        case SDL_CONTROLLER_BUTTON_START:
+        {
+            rememberCurrentProgress(
+                app
+            );
+
+            app.running =
+                false;
+
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
+void handleTocButton(
+    App& app,
+    Uint8 button)
+{
+    switch (
+        button
+    )
+    {
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+        {
+            if (
+                app.readerSpine.empty()
+            )
+            {
+                break;
+            }
+
+            --app.tocSelected;
+
+            if (
+                app.tocSelected < 0
+            )
+            {
+                app.tocSelected =
+                    static_cast<int>(
+                        app.readerSpine.size()
+                    )
+                    - 1;
+            }
+
+            break;
+        }
+
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+        {
+            if (
+                app.readerSpine.empty()
+            )
+            {
+                break;
+            }
+
+            ++app.tocSelected;
+
+            if (
+                app.tocSelected >=
+                static_cast<int>(
+                    app.readerSpine.size()
+                )
+            )
+            {
+                app.tocSelected =
+                    0;
+            }
+
+            break;
+        }
+
+        case SDL_CONTROLLER_BUTTON_A:
+        {
+            jumpToTocSelection(
+                app
+            );
+
+            break;
+        }
+
+        case SDL_CONTROLLER_BUTTON_B:
+        case SDL_CONTROLLER_BUTTON_Y:
+        {
+            closeToc(
                 app
             );
 
@@ -5324,6 +5492,16 @@ void handleInput(
             case Screen::Reader:
             {
                 handleReaderButton(
+                    app,
+                    event.cbutton.button
+                );
+
+                break;
+            }
+
+            case Screen::Toc:
+            {
+                handleTocButton(
                     app,
                     event.cbutton.button
                 );
@@ -5956,13 +6134,16 @@ void renderReader(
             );
     }
 
+    const std::string controls =
+        app.readerContent ==
+                ReaderContent::Image
+            ? "L/R Page  TRIANGLE Index  O Back"
+            : "L/R Page  TRIANGLE Index  O Back";
+
     drawText(
         app,
         app.fontSmall,
-        app.readerContent ==
-                ReaderContent::Image
-            ? "L/R Page   O Back"
-            : "L/R Page  UP/DOWN Line  O Back",
+        controls,
         14,
         253,
         muted
@@ -5982,6 +6163,263 @@ void renderReader(
             - 14
             - progressWidth,
         253,
+        muted
+    );
+
+    SDL_RenderPresent(
+        app.renderer
+    );
+}
+
+void renderToc(
+    App& app)
+{
+    const SDL_Color background =
+        {18, 19, 20, 255};
+
+    const SDL_Color header =
+        {31, 33, 35, 255};
+
+    const SDL_Color selection =
+        {48, 50, 50, 255};
+
+    const SDL_Color text =
+        {235, 235, 230, 255};
+
+    const SDL_Color muted =
+        {150, 150, 145, 255};
+
+    const SDL_Color current =
+        {190, 190, 175, 255};
+
+    SDL_SetRenderDrawColor(
+        app.renderer,
+        background.r,
+        background.g,
+        background.b,
+        background.a
+    );
+
+    SDL_RenderClear(
+        app.renderer
+    );
+
+    SDL_Rect headerRect
+    {
+        0,
+        0,
+        SCREEN_WIDTH,
+        45
+    };
+
+    SDL_SetRenderDrawColor(
+        app.renderer,
+        header.r,
+        header.g,
+        header.b,
+        header.a
+    );
+
+    SDL_RenderFillRect(
+        app.renderer,
+        &headerRect
+    );
+
+    drawText(
+        app,
+        app.fontNormal,
+        "Table of Contents",
+        16,
+        7,
+        text
+    );
+
+    drawText(
+        app,
+        app.fontSmall,
+        fitTextToWidth(
+            app.fontSmall,
+            app.readerTitle,
+            250
+        ),
+        214,
+        13,
+        muted
+    );
+
+    if (
+        app.readerSpine.empty()
+    )
+    {
+        drawText(
+            app,
+            app.fontNormal,
+            "No chapters",
+            175,
+            120,
+            text
+        );
+    }
+    else
+    {
+        int firstItem =
+            0;
+
+        if (
+            app.tocSelected >=
+            TOC_VISIBLE_ITEMS
+        )
+        {
+            firstItem =
+                app.tocSelected
+                - TOC_VISIBLE_ITEMS
+                + 1;
+        }
+
+        const int maxFirst =
+            std::max(
+                0,
+                static_cast<int>(
+                    app.readerSpine.size()
+                )
+                - TOC_VISIBLE_ITEMS
+            );
+
+        firstItem =
+            std::clamp(
+                firstItem,
+                0,
+                maxFirst
+            );
+
+        for (
+            int row = 0;
+            row < TOC_VISIBLE_ITEMS;
+            ++row
+        )
+        {
+            const int index =
+                firstItem
+                + row;
+
+            if (
+                index >=
+                static_cast<int>(
+                    app.readerSpine.size()
+                )
+            )
+            {
+                break;
+            }
+
+            const int y =
+                53
+                + row
+                * TOC_ROW_HEIGHT;
+
+            const bool isSelected =
+                index ==
+                app.tocSelected;
+
+            const bool isCurrent =
+                index ==
+                app.readerChapterIndex;
+
+            if (
+                isSelected
+            )
+            {
+                SDL_Rect selectionRect
+                {
+                    12,
+                    y - 3,
+                    456,
+                    24
+                };
+
+                SDL_SetRenderDrawColor(
+                    app.renderer,
+                    selection.r,
+                    selection.g,
+                    selection.b,
+                    selection.a
+                );
+
+                SDL_RenderFillRect(
+                    app.renderer,
+                    &selectionRect
+                );
+            }
+
+            const std::string number =
+                std::to_string(
+                    index + 1
+                )
+                + "/"
+                + std::to_string(
+                    app.readerSpine.size()
+                );
+
+            const int numberWidth =
+                textPixelWidth(
+                    app.fontSmall,
+                    number
+                );
+
+            const int numberX =
+                SCREEN_WIDTH
+                - 22
+                - numberWidth;
+
+            std::string title =
+                app.readerSpine[
+                    index
+                ].title;
+
+            if (
+                isCurrent
+            )
+            {
+                title =
+                    "* "
+                    + title;
+            }
+
+            title =
+                fitTextToWidth(
+                    app.fontSmall,
+                    title,
+                    numberX - 34
+                );
+
+            drawText(
+                app,
+                app.fontSmall,
+                title,
+                22,
+                y,
+                isCurrent
+                    ? current
+                    : text
+            );
+
+            drawText(
+                app,
+                app.fontSmall,
+                number,
+                numberX,
+                y,
+                muted
+            );
+        }
+    }
+
+    drawText(
+        app,
+        app.fontSmall,
+        "X Jump   O Back   TRIANGLE Close",
+        14,
+        249,
         muted
     );
 
@@ -6018,6 +6456,15 @@ void render(
         case Screen::Reader:
         {
             renderReader(
+                app
+            );
+
+            break;
+        }
+
+        case Screen::Toc:
+        {
+            renderToc(
                 app
             );
 
