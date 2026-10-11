@@ -31,7 +31,13 @@ constexpr int LANDSCAPE_TEXT_LEFT = 22;
 constexpr int PORTRAIT_TEXT_LEFT = 16;
 
 constexpr int READER_TOP = 45;
-constexpr int READER_LINE_HEIGHT = 18;
+
+constexpr int READER_FONT_MIN = 12;
+constexpr int READER_FONT_MAX = 18;
+constexpr int READER_FONT_STEP = 2;
+constexpr int READER_FONT_DEFAULT = 14;
+constexpr int READER_HEADING_DELTA = 2;
+constexpr int READER_LINE_GAP = 4;
 
 constexpr int LEGACY_READER_VISIBLE_LINES = 11;
 
@@ -288,6 +294,9 @@ struct App {
     Orientation orientation =
         Orientation::Landscape;
 
+    int readerFontSize =
+        READER_FONT_DEFAULT;
+
     int selected = 0;
 
     int currentBookIndex = -1;
@@ -404,7 +413,7 @@ void resetDebugLog()
 
     std::fprintf(
         file,
-        "Larp Reader 0.0.17 semantic-anchor-fix debug log\n"
+        "Larp Reader 0.0.18 font-size debug log\n"
     );
 
     std::fprintf(
@@ -4086,6 +4095,47 @@ TTF_Font* loadFont(
     return nullptr;
 }
 
+
+int normalizeReaderFontSize(
+    int size)
+{
+    size =
+        std::clamp(
+            size,
+            READER_FONT_MIN,
+            READER_FONT_MAX
+        );
+
+    const int relative =
+        size
+        - READER_FONT_MIN;
+
+    const int steps =
+        (
+            relative
+            + READER_FONT_STEP / 2
+        )
+        /
+        READER_FONT_STEP;
+
+    return
+        std::clamp(
+            READER_FONT_MIN
+                + steps
+                    * READER_FONT_STEP,
+            READER_FONT_MIN,
+            READER_FONT_MAX
+        );
+}
+
+int readerLineHeight(
+    const App& app)
+{
+    return
+        app.readerFontSize
+        + READER_LINE_GAP;
+}
+
 int canvasWidth(
     const App& app)
 {
@@ -4159,7 +4209,9 @@ int readerVisibleLines(
                 )
                 - READER_TOP
             )
-            / READER_LINE_HEIGHT
+            / readerLineHeight(
+                app
+            )
             + 1
         );
 }
@@ -5297,6 +5349,22 @@ void loadSettings(
             app.orientation =
                 Orientation::Landscape;
         }
+        else if (
+            line.rfind(
+                "font_size=",
+                0
+            ) == 0
+        )
+        {
+            app.readerFontSize =
+                normalizeReaderFontSize(
+                    std::atoi(
+                        line.substr(
+                            10
+                        ).c_str()
+                    )
+                );
+        }
     }
 
     std::fclose(
@@ -5323,6 +5391,12 @@ void saveSettings(
             Orientation::Portrait
         ? "portrait"
         : "landscape"
+    );
+
+    std::fprintf(
+        file,
+        "font_size=%d\n",
+        app.readerFontSize
     );
 
     std::fclose(
@@ -7215,6 +7289,130 @@ void clearTextCache(
     app.textCache.clear();
 }
 
+
+bool setReaderFontSize(
+    App& app,
+    int requestedSize)
+{
+    const int normalizedSize =
+        normalizeReaderFontSize(
+            requestedSize
+        );
+
+    TTF_Font* newReader =
+        loadFont(
+            normalizedSize
+        );
+
+    TTF_Font* newReaderItalic =
+        loadFont(
+            normalizedSize
+        );
+
+    TTF_Font* newHeading =
+        loadFont(
+            normalizedSize
+                + READER_HEADING_DELTA
+        );
+
+    if (
+        !newReader ||
+        !newReaderItalic ||
+        !newHeading
+    )
+    {
+        if (
+            newHeading
+        )
+        {
+            TTF_CloseFont(
+                newHeading
+            );
+        }
+
+        if (
+            newReaderItalic
+        )
+        {
+            TTF_CloseFont(
+                newReaderItalic
+            );
+        }
+
+        if (
+            newReader
+        )
+        {
+            TTF_CloseFont(
+                newReader
+            );
+        }
+
+        debugLog(
+            "Reader font reload failed for size %d: %s",
+            normalizedSize,
+            TTF_GetError()
+        );
+
+        return false;
+    }
+
+    TTF_SetFontStyle(
+        newReaderItalic,
+        TTF_STYLE_ITALIC
+    );
+
+    TTF_SetFontStyle(
+        newHeading,
+        TTF_STYLE_BOLD
+    );
+
+    clearTextCache(
+        app
+    );
+
+    if (
+        app.fontHeading
+    )
+    {
+        TTF_CloseFont(
+            app.fontHeading
+        );
+    }
+
+    if (
+        app.fontReaderItalic
+    )
+    {
+        TTF_CloseFont(
+            app.fontReaderItalic
+        );
+    }
+
+    if (
+        app.fontReader
+    )
+    {
+        TTF_CloseFont(
+            app.fontReader
+        );
+    }
+
+    app.fontReader =
+        newReader;
+
+    app.fontReaderItalic =
+        newReaderItalic;
+
+    app.fontHeading =
+        newHeading;
+
+    app.readerFontSize =
+        normalizedSize;
+
+    return true;
+}
+
 int activeTocIndexForSpine(
     const App& app,
     int spineIndex)
@@ -7868,11 +8066,12 @@ void finishDocument(
     );
 
     debugLog(
-        "DISPLAY: orientation=%s spine=%d/%zu page=%d/%zu title=%s",
+        "DISPLAY: orientation=%s font=%d spine=%d/%zu page=%d/%zu title=%s",
         app.orientation ==
             Orientation::Portrait
         ? "portrait"
         : "landscape",
+        app.readerFontSize,
         app.readerSpineIndex + 1,
         app.readerSpine.size(),
         app.readerPageIndex + 1,
@@ -8132,11 +8331,12 @@ void processLoadingStage(
             );
 
         debugLog(
-            "LAYOUT: orientation=%s %s -> %zu pages, %zu mapped anchors",
+            "LAYOUT: orientation=%s font=%d %s -> %zu pages, %zu mapped anchors",
             app.orientation ==
                 Orientation::Portrait
             ? "portrait"
             : "landscape",
+            app.readerFontSize,
             app.pendingDocument
                 .path.c_str(),
             layout.pages.size(),
@@ -8375,6 +8575,95 @@ void toggleReaderOrientation(
                 Orientation::Portrait
             ? "portrait"
             : "landscape"
+        );
+    }
+
+    destroyReaderImage(
+        app
+    );
+
+    scheduleDocumentLoad(
+        app,
+        app.readerSpineIndex,
+        semanticPosition.valid
+            ? DocumentPosition::Semantic
+            : DocumentPosition::Restore,
+        app.readerPageIndex,
+        1,
+        Screen::Reader,
+        "",
+        app.readerActiveTocIndex,
+        semanticPosition
+    );
+}
+
+
+void cycleReaderFontSize(
+    App& app)
+{
+    if (
+        app.readerSpineIndex < 0 ||
+        app.readerPages.empty()
+    )
+    {
+        return;
+    }
+
+    const SemanticPosition semanticPosition =
+        currentReaderSemanticPosition(
+            app
+        );
+
+    int nextSize =
+        app.readerFontSize
+        + READER_FONT_STEP;
+
+    if (
+        nextSize >
+        READER_FONT_MAX
+    )
+    {
+        nextSize =
+            READER_FONT_MIN;
+    }
+
+    if (
+        !setReaderFontSize(
+            app,
+            nextSize
+        )
+    )
+    {
+        return;
+    }
+
+    saveSettings(
+        app
+    );
+
+    if (
+        semanticPosition.valid
+    )
+    {
+        debugLog(
+            "Font size changed to %d at semantic block=%llu offset=%llu text=%s",
+            app.readerFontSize,
+            static_cast<unsigned long long>(
+                semanticPosition.blockIndex
+            ),
+            static_cast<unsigned long long>(
+                semanticPosition.textOffset
+            ),
+            semanticPosition.hasTextOffset
+                ? "yes"
+                : "no"
+        );
+    }
+    else
+    {
+        debugLog(
+            "Font size changed to %d without semantic position",
+            app.readerFontSize
         );
     }
 
@@ -8653,21 +8942,6 @@ bool initialize(
             12
         );
 
-    app.fontReader =
-        loadFont(
-            14
-        );
-
-    app.fontReaderItalic =
-        loadFont(
-            14
-        );
-
-    app.fontHeading =
-        loadFont(
-            16
-        );
-
     if (
         app.fontSmallItalic
     )
@@ -8679,29 +8953,30 @@ bool initialize(
     }
 
     if (
-        app.fontReaderItalic
-    )
-    {
-        TTF_SetFontStyle(
-            app.fontReaderItalic,
-            TTF_STYLE_ITALIC
-        );
-    }
-
-    if (
-        app.fontHeading
-    )
-    {
-        TTF_SetFontStyle(
-            app.fontHeading,
-            TTF_STYLE_BOLD
-        );
-    }
-
-    if (
         !app.fontNormal ||
         !app.fontSmall ||
-        !app.fontSmallItalic ||
+        !app.fontSmallItalic
+    )
+    {
+        debugLog(
+            "UI font load failed: %s",
+            TTF_GetError()
+        );
+
+        return false;
+    }
+
+    if (
+        !setReaderFontSize(
+            app,
+            app.readerFontSize
+        )
+    )
+    {
+        return false;
+    }
+
+    if (
         !app.fontReader ||
         !app.fontReaderItalic ||
         !app.fontHeading
@@ -8761,6 +9036,11 @@ bool initialize(
             Orientation::Portrait
         ? "portrait"
         : "landscape"
+    );
+
+    debugLog(
+        "Startup reader font size: %d",
+        app.readerFontSize
     );
 
     return true;
@@ -8941,6 +9221,15 @@ void handleReaderButton(
         case SDL_CONTROLLER_BUTTON_B:
         {
             closeReader(
+                app
+            );
+
+            break;
+        }
+
+        case SDL_CONTROLLER_BUTTON_BACK:
+        {
+            cycleReaderFontSize(
                 app
             );
 
@@ -9846,7 +10135,9 @@ void renderReader(
                 }
 
                 y +=
-                    READER_LINE_HEIGHT;
+                    readerLineHeight(
+                        app
+                    );
             }
         }
         else
@@ -9996,9 +10287,25 @@ void renderReader(
             muted
         );
 
-        drawReaderFooterControls(
+        const int controlsEnd =
+            drawReaderFooterControls(
+                app,
+                10,
+                footerLine2,
+                muted
+            );
+
+        const std::string fontControl =
+            "SEL Tamaño "
+            + std::to_string(
+                app.readerFontSize
+            );
+
+        drawText(
             app,
-            10,
+            app.fontSmall,
+            fontControl,
+            controlsEnd + 8,
             footerLine2,
             muted
         );
@@ -10025,9 +10332,25 @@ void renderReader(
             )
             + 12;
 
-        drawReaderFooterControls(
+        const int controlsEnd =
+            drawReaderFooterControls(
+                app,
+                controlsX,
+                footerY,
+                muted
+            );
+
+        const std::string fontControl =
+            "SEL Tamaño "
+            + std::to_string(
+                app.readerFontSize
+            );
+
+        drawText(
             app,
-            controlsX,
+            app.fontSmall,
+            fontControl,
+            controlsEnd + 8,
             footerY,
             muted
         );
