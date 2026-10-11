@@ -127,9 +127,15 @@ target_link_libraries(larpreader PRIVATE
     ${ZLIB_LIBRARY}
 )
 
+set(XMB_ASSET_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/xmb"
+)
+
 create_pbp_file(
     TARGET larpreader
     TITLE "Larp Reader"
     VERSION "00.21"
     MEMSIZE 1
+    ICON_PATH "${XMB_ASSET_DIR}/ICON0.PNG"
+    BACKGROUND_PATH "${XMB_ASSET_DIR}/PIC1.PNG"
 )
