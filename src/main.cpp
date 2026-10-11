@@ -24,6 +24,8 @@ namespace {
 constexpr int SCREEN_WIDTH = 480;
 constexpr int SCREEN_HEIGHT = 272;
 
+constexpr int PSP_TEXTURE_LIMIT = 512;
+
 constexpr int PORTRAIT_WIDTH = 272;
 constexpr int PORTRAIT_HEIGHT = 480;
 
@@ -431,7 +433,7 @@ void resetDebugLog()
 
     std::fprintf(
         file,
-        "Larp Reader 0.0.19 themes debug log\n"
+        "Larp Reader 0.0.20 hardware image compatibility debug log\n"
     );
 
     std::fprintf(
@@ -6036,17 +6038,37 @@ SDL_Surface* rotateSurfaceClockwise(
     }
 
     SDL_Surface* rgba =
-        SDL_ConvertSurfaceFormat(
-            source,
-            SDL_PIXELFORMAT_RGBA32,
-            0
-        );
+        source;
+
+    bool ownsRgba =
+        false;
 
     if (
-        !rgba
+        source->format->format !=
+        SDL_PIXELFORMAT_RGBA32
     )
     {
-        return nullptr;
+        rgba =
+            SDL_ConvertSurfaceFormat(
+                source,
+                SDL_PIXELFORMAT_RGBA32,
+                0
+            );
+
+        if (
+            !rgba
+        )
+        {
+            debugLog(
+                "Surface rotation conversion failed: %s",
+                SDL_GetError()
+            );
+
+            return nullptr;
+        }
+
+        ownsRgba =
+            true;
     }
 
     SDL_Surface* rotated =
@@ -6062,9 +6084,23 @@ SDL_Surface* rotateSurfaceClockwise(
         !rotated
     )
     {
-        SDL_FreeSurface(
-            rgba
+        debugLog(
+            "Surface rotation allocation failed: %dx%d -> %dx%d: %s",
+            rgba->w,
+            rgba->h,
+            rgba->h,
+            rgba->w,
+            SDL_GetError()
         );
+
+        if (
+            ownsRgba
+        )
+        {
+            SDL_FreeSurface(
+                rgba
+            );
+        }
 
         return nullptr;
     }
@@ -6084,13 +6120,23 @@ SDL_Surface* rotateSurfaceClockwise(
             ) != 0
         )
         {
+            debugLog(
+                "Surface rotation source lock failed: %s",
+                SDL_GetError()
+            );
+
             SDL_FreeSurface(
                 rotated
             );
 
-            SDL_FreeSurface(
-                rgba
-            );
+            if (
+                ownsRgba
+            )
+            {
+                SDL_FreeSurface(
+                    rgba
+                );
+            }
 
             return nullptr;
         }
@@ -6111,6 +6157,11 @@ SDL_Surface* rotateSurfaceClockwise(
             ) != 0
         )
         {
+            debugLog(
+                "Surface rotation destination lock failed: %s",
+                SDL_GetError()
+            );
+
             if (
                 sourceLocked
             )
@@ -6124,9 +6175,14 @@ SDL_Surface* rotateSurfaceClockwise(
                 rotated
             );
 
-            SDL_FreeSurface(
-                rgba
-            );
+            if (
+                ownsRgba
+            )
+            {
+                SDL_FreeSurface(
+                    rgba
+                );
+            }
 
             return nullptr;
         }
@@ -6207,9 +6263,14 @@ SDL_Surface* rotateSurfaceClockwise(
         );
     }
 
-    SDL_FreeSurface(
-        rgba
-    );
+    if (
+        ownsRgba
+    )
+    {
+        SDL_FreeSurface(
+            rgba
+        );
+    }
 
     return rotated;
 }
@@ -6396,6 +6457,16 @@ bool loadImageTextureFromEpub(
             1
         );
 
+    /*
+     * IMG_Load_RW has already decoded the image. Release the compressed
+     * EPUB bytes immediately so hardware PSP has as much free memory as
+     * possible while creating the scaled surface and GPU texture.
+     */
+    std::vector<std::uint8_t>()
+        .swap(
+            imageBytes
+        );
+
     if (!source)
     {
         error =
@@ -6419,8 +6490,26 @@ bool loadImageTextureFromEpub(
         return false;
     }
 
+    const int safeMaxWidth =
+        std::max(
+            1,
+            std::min(
+                maxWidth,
+                PSP_TEXTURE_LIMIT
+            )
+        );
+
+    const int safeMaxHeight =
+        std::max(
+            1,
+            std::min(
+                maxHeight,
+                PSP_TEXTURE_LIMIT
+            )
+        );
+
     debugLog(
-        "IMG: %s source=%dx%d format=%s bpp=%d targetMax=%dx%d",
+        "IMG: %s source=%dx%d format=%s bpp=%d targetMax=%dx%d safeMax=%dx%d",
         imagePath.c_str(),
         source->w,
         source->h,
@@ -6429,12 +6518,14 @@ bool loadImageTextureFromEpub(
         ),
         source->format->BitsPerPixel,
         maxWidth,
-        maxHeight
+        maxHeight,
+        safeMaxWidth,
+        safeMaxHeight
     );
 
     const double scaleX =
         static_cast<double>(
-            maxWidth
+            safeMaxWidth
         )
         /
         static_cast<double>(
@@ -6443,7 +6534,7 @@ bool loadImageTextureFromEpub(
 
     const double scaleY =
         static_cast<double>(
-            maxHeight
+            safeMaxHeight
         )
         /
         static_cast<double>(
@@ -6462,110 +6553,151 @@ bool loadImageTextureFromEpub(
     const int scaledWidth =
         std::max(
             1,
-            static_cast<int>(
-                source->w
-                * scale
+            std::min(
+                PSP_TEXTURE_LIMIT,
+                static_cast<int>(
+                    source->w
+                    * scale
+                )
             )
         );
 
     const int scaledHeight =
         std::max(
             1,
-            static_cast<int>(
-                source->h
-                * scale
+            std::min(
+                PSP_TEXTURE_LIMIT,
+                static_cast<int>(
+                    source->h
+                    * scale
+                )
             )
         );
 
-    SDL_Surface* finalSurface =
-        source;
-
-    SDL_Surface* converted =
-        nullptr;
-
-    SDL_Surface* scaled =
-        nullptr;
+    /*
+     * Always pre-scale into a small RGBA surface before creating a
+     * hardware texture.
+     *
+     * The PSP SDL renderer has a 512x512 texture limit. More importantly,
+     * keeping the original decoded image, a full-size RGBA conversion,
+     * a scaled surface and a rotated surface alive at the same time causes
+     * unnecessary memory pressure on real hardware.
+     *
+     * SDL_BlitScaled can convert the source format while scaling, so there
+     * is no need for a full-size RGBA copy of the source image.
+     */
+    SDL_Surface* prepared =
+        SDL_CreateRGBSurfaceWithFormat(
+            0,
+            scaledWidth,
+            scaledHeight,
+            32,
+            SDL_PIXELFORMAT_RGBA32
+        );
 
     if (
-        scaledWidth !=
-            source->w ||
-        scaledHeight !=
-            source->h
+        !prepared
     )
     {
-        converted =
-            SDL_ConvertSurfaceFormat(
-                source,
-                SDL_PIXELFORMAT_RGBA32,
-                0
-            );
-
-        if (
-            converted
-        )
-        {
-            scaled =
-                SDL_CreateRGBSurfaceWithFormat(
-                    0,
-                    scaledWidth,
-                    scaledHeight,
-                    32,
-                    SDL_PIXELFORMAT_RGBA32
-                );
-
-            if (
-                scaled &&
-                SDL_BlitScaled(
-                    converted,
-                    nullptr,
-                    scaled,
-                    nullptr
-                ) == 0
+        error =
+            std::string(
+                "Could not allocate scaled image: "
             )
-            {
-                finalSurface =
-                    scaled;
-            }
-            else
-            {
-                if (
-                    scaled
-                )
-                {
-                    SDL_FreeSurface(
-                        scaled
-                    );
+            + SDL_GetError();
 
-                    scaled =
-                        nullptr;
-                }
+        debugLog(
+            "IMG prepare allocation failed: %s source=%dx%d target=%dx%d error=%s",
+            imagePath.c_str(),
+            source->w,
+            source->h,
+            scaledWidth,
+            scaledHeight,
+            SDL_GetError()
+        );
 
-                debugLog(
-                    "Image pre-scale failed, falling back to source texture: %s",
-                    SDL_GetError()
-                );
-            }
-        }
-        else
-        {
-            debugLog(
-                "Image conversion failed, falling back to source texture: %s",
-                SDL_GetError()
-            );
-        }
+        SDL_FreeSurface(
+            source
+        );
+
+        return false;
     }
 
+    SDL_BlendMode originalBlendMode =
+        SDL_BLENDMODE_NONE;
+
+    SDL_GetSurfaceBlendMode(
+        source,
+        &originalBlendMode
+    );
+
+    SDL_SetSurfaceBlendMode(
+        source,
+        SDL_BLENDMODE_NONE
+    );
+
+    const int blitResult =
+        SDL_BlitScaled(
+            source,
+            nullptr,
+            prepared,
+            nullptr
+        );
+
+    SDL_SetSurfaceBlendMode(
+        source,
+        originalBlendMode
+    );
+
+    if (
+        blitResult != 0
+    )
+    {
+        error =
+            std::string(
+                "Could not scale image: "
+            )
+            + SDL_GetError();
+
+        debugLog(
+            "IMG prepare scale failed: %s source=%dx%d target=%dx%d error=%s",
+            imagePath.c_str(),
+            source->w,
+            source->h,
+            scaledWidth,
+            scaledHeight,
+            SDL_GetError()
+        );
+
+        SDL_FreeSurface(
+            prepared
+        );
+
+        SDL_FreeSurface(
+            source
+        );
+
+        return false;
+    }
+
+    /*
+     * The original decoded image can now be released before rotation or
+     * texture creation. This is the important part for PSP memory usage.
+     */
+    SDL_FreeSurface(
+        source
+    );
+
+    source =
+        nullptr;
+
     const int logicalWidth =
-        finalSurface->w;
+        prepared->w;
 
     const int logicalHeight =
-        finalSurface->h;
+        prepared->h;
 
     SDL_Surface* textureSurface =
-        finalSurface;
-
-    SDL_Surface* rotated =
-        nullptr;
+        prepared;
 
     const bool portrait =
         bookPortraitRendering(
@@ -6576,9 +6708,9 @@ bool loadImageTextureFromEpub(
         portrait
     )
     {
-        rotated =
+        SDL_Surface* rotated =
             rotateSurfaceClockwise(
-                finalSurface
+                prepared
             );
 
         if (
@@ -6588,34 +6720,68 @@ bool loadImageTextureFromEpub(
             error =
                 "Could not rotate image";
 
-            if (
-                scaled
-            )
-            {
-                SDL_FreeSurface(
-                    scaled
-                );
-            }
-
-            if (
-                converted
-            )
-            {
-                SDL_FreeSurface(
-                    converted
-                );
-            }
+            debugLog(
+                "IMG rotate failed: %s logical=%dx%d",
+                imagePath.c_str(),
+                logicalWidth,
+                logicalHeight
+            );
 
             SDL_FreeSurface(
-                source
+                prepared
             );
 
             return false;
         }
 
+        SDL_FreeSurface(
+            prepared
+        );
+
+        prepared =
+            nullptr;
+
         textureSurface =
             rotated;
     }
+
+    if (
+        textureSurface->w >
+            PSP_TEXTURE_LIMIT ||
+        textureSurface->h >
+            PSP_TEXTURE_LIMIT
+    )
+    {
+        debugLog(
+            "IMG texture rejected before SDL: %s texture=%dx%d limit=%dx%d",
+            imagePath.c_str(),
+            textureSurface->w,
+            textureSurface->h,
+            PSP_TEXTURE_LIMIT,
+            PSP_TEXTURE_LIMIT
+        );
+
+        error =
+            "Prepared image exceeds PSP texture limit";
+
+        SDL_FreeSurface(
+            textureSurface
+        );
+
+        return false;
+    }
+
+    debugLog(
+        "IMG prepared: %s logical=%dx%d textureSurface=%dx%d orientation=%s",
+        imagePath.c_str(),
+        logicalWidth,
+        logicalHeight,
+        textureSurface->w,
+        textureSurface->h,
+        portrait
+            ? "portrait"
+            : "landscape"
+    );
 
     SDL_Texture* texture =
         SDL_CreateTextureFromSurface(
@@ -6628,83 +6794,37 @@ bool loadImageTextureFromEpub(
         error =
             SDL_GetError();
 
-        if (
-            rotated
-        )
-        {
-            SDL_FreeSurface(
-                rotated
-            );
-        }
-
-        if (
-            scaled
-        )
-        {
-            SDL_FreeSurface(
-                scaled
-            );
-        }
-
-        if (
-            converted
-        )
-        {
-            SDL_FreeSurface(
-                converted
-            );
-        }
+        debugLog(
+            "IMG texture creation failed: %s surface=%dx%d error=%s",
+            imagePath.c_str(),
+            textureSurface->w,
+            textureSurface->h,
+            SDL_GetError()
+        );
 
         SDL_FreeSurface(
-            source
+            textureSurface
         );
 
         return false;
     }
+
+    SDL_FreeSurface(
+        textureSurface
+    );
 
     outputTexture =
         texture;
 
     /*
      * Keep the logical dimensions. In portrait mode the actual texture
-     * has the swapped dimensions because its pixels are already rotated.
+     * has swapped dimensions because its pixels are already rotated.
      */
     outputWidth =
         logicalWidth;
 
     outputHeight =
         logicalHeight;
-
-    if (
-        rotated
-    )
-    {
-        SDL_FreeSurface(
-            rotated
-        );
-    }
-
-    if (
-        scaled
-    )
-    {
-        SDL_FreeSurface(
-            scaled
-        );
-    }
-
-    if (
-        converted
-    )
-    {
-        SDL_FreeSurface(
-            converted
-        );
-    }
-
-    SDL_FreeSurface(
-        source
-    );
 
     debugLog(
         "IMG texture ready: %s logical=%dx%d texture=%dx%d orientation=%s",
