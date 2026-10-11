@@ -75,7 +75,7 @@ enum class DocumentPosition {
     Start,
     End,
     Restore,
-    Relative
+    Semantic
 };
 
 enum class BlockKind {
@@ -169,6 +169,14 @@ struct AnchorLocation {
     bool hasTextOffset = false;
 };
 
+struct SemanticPosition {
+    std::size_t blockIndex = 0;
+    std::size_t textOffset = 0;
+
+    bool hasTextOffset = false;
+    bool valid = false;
+};
+
 struct ChapterDocument {
     std::string path;
 
@@ -198,6 +206,8 @@ struct DocumentPage {
     PageKind kind =
         PageKind::Text;
 
+    SemanticPosition sourcePosition;
+
     std::vector<TextLine> lines;
 
     std::string imagePath;
@@ -225,6 +235,8 @@ struct LayoutResult {
 struct ReadingProgress {
     int spineIndex = 0;
     int pageIndex = 0;
+
+    SemanticPosition semanticPosition;
 };
 
 struct InlineTextBuilder {
@@ -295,6 +307,8 @@ struct App {
     int readerSpineIndex = -1;
     int readerPageIndex = 0;
 
+    SemanticPosition readerSemanticPosition;
+
     int readerActiveTocIndex = -1;
 
     int tocSelected = 0;
@@ -314,7 +328,7 @@ struct App {
 
     int pendingRestorePage = 0;
 
-    double pendingRestoreRatio = 0.0;
+    SemanticPosition pendingSemanticPosition;
 
     int pendingTocIndex = -1;
 
@@ -390,7 +404,7 @@ void resetDebugLog()
 
     std::fprintf(
         file,
-        "Larp Reader 0.0.16 debug log\n"
+        "Larp Reader 0.0.17 semantic-anchor-fix debug log\n"
     );
 
     std::fprintf(
@@ -4592,7 +4606,8 @@ WrappedTextBlock wrapTextBlock(
 
 void flushTextPage(
     std::vector<DocumentPage>& pages,
-    std::vector<TextLine>& currentLines)
+    std::vector<TextLine>& currentLines,
+    SemanticPosition& currentPosition)
 {
     if (
         currentLines.empty()
@@ -4606,6 +4621,9 @@ void flushTextPage(
     page.kind =
         PageKind::Text;
 
+    page.sourcePosition =
+        currentPosition;
+
     page.lines =
         std::move(
             currentLines
@@ -4618,6 +4636,9 @@ void flushTextPage(
     );
 
     currentLines.clear();
+
+    currentPosition =
+        SemanticPosition{};
 }
 
 int renderedLineForOffset(
@@ -4757,6 +4778,9 @@ LayoutResult layoutDocument(
     std::vector<TextLine>
         currentLines;
 
+    SemanticPosition
+        currentPosition;
+
     const int visibleLines =
         readerVisibleLines(
             app
@@ -4815,7 +4839,8 @@ LayoutResult layoutDocument(
             {
                 flushTextPage(
                     result.pages,
-                    currentLines
+                    currentLines,
+                    currentPosition
                 );
             }
 
@@ -4827,8 +4852,9 @@ LayoutResult layoutDocument(
             );
 
             for (
-                const TextLine& line :
-                wrapped.lines
+                std::size_t lineIndex = 0;
+                lineIndex < wrapped.lines.size();
+                ++lineIndex
             )
             {
                 if (
@@ -4840,8 +4866,31 @@ LayoutResult layoutDocument(
                 {
                     flushTextPage(
                         result.pages,
-                        currentLines
+                        currentLines,
+                        currentPosition
                     );
+                }
+
+                if (
+                    currentLines.empty()
+                )
+                {
+                    currentPosition.blockIndex =
+                        i;
+
+                    currentPosition.textOffset =
+                        lineIndex <
+                            wrapped.lineStarts.size()
+                        ? wrapped.lineStarts[
+                            lineIndex
+                        ]
+                        : 0;
+
+                    currentPosition.hasTextOffset =
+                        true;
+
+                    currentPosition.valid =
+                        true;
                 }
 
                 linePages.push_back(
@@ -4851,7 +4900,9 @@ LayoutResult layoutDocument(
                 );
 
                 currentLines.push_back(
-                    line
+                    wrapped.lines[
+                        lineIndex
+                    ]
                 );
             }
 
@@ -4882,7 +4933,8 @@ LayoutResult layoutDocument(
 
         flushTextPage(
             result.pages,
-            currentLines
+            currentLines,
+            currentPosition
         );
 
         const int imagePageIndex =
@@ -4901,6 +4953,18 @@ LayoutResult layoutDocument(
 
         imagePage.kind =
             PageKind::Image;
+
+        imagePage.sourcePosition.blockIndex =
+            i;
+
+        imagePage.sourcePosition.textOffset =
+            0;
+
+        imagePage.sourcePosition.hasTextOffset =
+            false;
+
+        imagePage.sourcePosition.valid =
+            true;
 
         imagePage.imagePath =
             block.imagePath;
@@ -5011,7 +5075,8 @@ LayoutResult layoutDocument(
 
     flushTextPage(
         result.pages,
-        currentLines
+        currentLines,
+        currentPosition
     );
 
     if (
@@ -5066,6 +5131,118 @@ LayoutResult layoutDocument(
     }
 
     return result;
+}
+
+bool semanticPositionAtOrBefore(
+    const SemanticPosition& candidate,
+    const SemanticPosition& target)
+{
+    if (
+        !candidate.valid ||
+        !target.valid
+    )
+    {
+        return false;
+    }
+
+    if (
+        candidate.blockIndex <
+        target.blockIndex
+    )
+    {
+        return true;
+    }
+
+    if (
+        candidate.blockIndex >
+        target.blockIndex
+    )
+    {
+        return false;
+    }
+
+    return
+        candidate.textOffset <=
+        target.textOffset;
+}
+
+int findPageForSemanticPosition(
+    const std::vector<DocumentPage>& pages,
+    const SemanticPosition& target)
+{
+    if (
+        pages.empty()
+    )
+    {
+        return 0;
+    }
+
+    if (
+        !target.valid
+    )
+    {
+        return 0;
+    }
+
+    int bestPage =
+        0;
+
+    bool found =
+        false;
+
+    for (
+        std::size_t i = 0;
+        i < pages.size();
+        ++i
+    )
+    {
+        const SemanticPosition& candidate =
+            pages[i].sourcePosition;
+
+        if (
+            !semanticPositionAtOrBefore(
+                candidate,
+                target
+            )
+        )
+        {
+            continue;
+        }
+
+        bestPage =
+            static_cast<int>(
+                i
+            );
+
+        found =
+            true;
+    }
+
+    if (
+        found
+    )
+    {
+        return bestPage;
+    }
+
+    for (
+        std::size_t i = 0;
+        i < pages.size();
+        ++i
+    )
+    {
+        if (
+            pages[i].sourcePosition.valid
+        )
+        {
+            return
+                static_cast<int>(
+                    i
+                );
+        }
+    }
+
+    return 0;
 }
 
 void loadSettings(
@@ -5710,8 +5887,8 @@ void resetRendererTransform(
      * framebuffer. Coordinates are rotated mathematically, while text
      * and image surfaces are rotated once before becoming textures.
      *
-     * This avoids the PSP SDL renderer clipping a 272x480 destination
-     * before SDL_RenderCopyEx() can rotate it.
+     * This avoids the PSP SDL renderer clipping an oversized rotated
+     * destination during portrait presentation.
      */
     SDL_SetRenderTarget(
         app.renderer,
@@ -6345,6 +6522,45 @@ void loadCurrentPageImage(
         page.imagePath;
 }
 
+SemanticPosition currentReaderSemanticPosition(
+    const App& app)
+{
+    /*
+     * readerSemanticPosition is a stable reading anchor.
+     *
+     * After a semantic restore the exact anchor can be inside the new
+     * page instead of at its first rendered line. Replacing the anchor
+     * with that page's top on every relayout causes cumulative backwards
+     * drift when repeatedly toggling Landscape <-> Portrait.
+     *
+     * Keep the exact anchor until the user explicitly changes page.
+     */
+    if (
+        app.readerSemanticPosition.valid
+    )
+    {
+        return
+            app.readerSemanticPosition;
+    }
+
+    if (
+        app.readerPageIndex < 0 ||
+        app.readerPageIndex >=
+            static_cast<int>(
+                app.readerPages.size()
+            )
+    )
+    {
+        return
+            SemanticPosition{};
+    }
+
+    return
+        app.readerPages[
+            app.readerPageIndex
+        ].sourcePosition;
+}
+
 void loadProgress(
     App& app)
 {
@@ -6358,6 +6574,7 @@ void loadProgress(
         return;
 
     bool version2 = false;
+    bool version3 = false;
     bool firstMeaningfulLine = true;
 
     char buffer[1024];
@@ -6388,6 +6605,21 @@ void loadProgress(
             line.empty()
         )
         {
+            continue;
+        }
+
+        if (
+            firstMeaningfulLine &&
+            line ==
+                "#LARP_PROGRESS_V3"
+        )
+        {
+            version3 =
+                true;
+
+            firstMeaningfulLine =
+                false;
+
             continue;
         }
 
@@ -6435,7 +6667,7 @@ void loadProgress(
 
             if (
                 tab ==
-                std::string::npos
+                    std::string::npos
             )
             {
                 fields.push_back(
@@ -6468,6 +6700,55 @@ void loadProgress(
         ReadingProgress progress;
 
         if (
+            version3 &&
+            fields.size() >= 7
+        )
+        {
+            progress.spineIndex =
+                std::max(
+                    0,
+                    std::atoi(
+                        fields[1].c_str()
+                    )
+                );
+
+            progress.pageIndex =
+                std::max(
+                    0,
+                    std::atoi(
+                        fields[2].c_str()
+                    )
+                );
+
+            progress.semanticPosition.blockIndex =
+                static_cast<std::size_t>(
+                    std::strtoull(
+                        fields[3].c_str(),
+                        nullptr,
+                        10
+                    )
+                );
+
+            progress.semanticPosition.textOffset =
+                static_cast<std::size_t>(
+                    std::strtoull(
+                        fields[4].c_str(),
+                        nullptr,
+                        10
+                    )
+                );
+
+            progress.semanticPosition.hasTextOffset =
+                std::atoi(
+                    fields[5].c_str()
+                ) != 0;
+
+            progress.semanticPosition.valid =
+                std::atoi(
+                    fields[6].c_str()
+                ) != 0;
+        }
+        else if (
             fields.size() == 2
         )
         {
@@ -6538,7 +6819,7 @@ void saveProgress(
 
     std::fprintf(
         file,
-        "#LARP_PROGRESS_V2\n"
+        "#LARP_PROGRESS_V3\n"
     );
 
     for (
@@ -6546,12 +6827,27 @@ void saveProgress(
         app.savedProgress
     )
     {
+        const SemanticPosition& semantic =
+            entry.second.semanticPosition;
+
         std::fprintf(
             file,
-            "%s\t%d\t%d\n",
+            "%s\t%d\t%d\t%llu\t%llu\t%d\t%d\n",
             entry.first.c_str(),
             entry.second.spineIndex,
-            entry.second.pageIndex
+            entry.second.pageIndex,
+            static_cast<unsigned long long>(
+                semantic.blockIndex
+            ),
+            static_cast<unsigned long long>(
+                semantic.textOffset
+            ),
+            semantic.hasTextOffset
+                ? 1
+                : 0,
+            semantic.valid
+                ? 1
+                : 0
         );
     }
 
@@ -6582,6 +6878,11 @@ void rememberCurrentProgress(
             app.readerPageIndex
         );
 
+    progress.semanticPosition =
+        currentReaderSemanticPosition(
+            app
+        );
+
     app.savedProgress[
         app.readerBookFilename
     ] =
@@ -6590,6 +6891,29 @@ void rememberCurrentProgress(
     saveProgress(
         app
     );
+
+    if (
+        progress.semanticPosition.valid
+    )
+    {
+        debugLog(
+            "PROGRESS SAVE: spine=%d page=%d block=%llu offset=%llu text=%s",
+            progress.spineIndex + 1,
+            progress.pageIndex + 1,
+            static_cast<unsigned long long>(
+                progress.semanticPosition
+                    .blockIndex
+            ),
+            static_cast<unsigned long long>(
+                progress.semanticPosition
+                    .textOffset
+            ),
+            progress.semanticPosition
+                    .hasTextOffset
+                ? "yes"
+                : "no"
+        );
+    }
 }
 
 std::string makeTextCacheKey(
@@ -7030,7 +7354,8 @@ void scheduleDocumentLoad(
     Screen returnScreen,
     const std::string& fragment,
     int tocIndex,
-    double restoreRatio = 0.0)
+    SemanticPosition semanticPosition =
+        SemanticPosition{})
 {
     if (
         spineIndex < 0 ||
@@ -7052,12 +7377,8 @@ void scheduleDocumentLoad(
     app.pendingRestorePage =
         restorePage;
 
-    app.pendingRestoreRatio =
-        std::clamp(
-            restoreRatio,
-            0.0,
-            1.0
-        );
+    app.pendingSemanticPosition =
+        semanticPosition;
 
     app.pendingSearchDirection =
         searchDirection >= 0
@@ -7251,6 +7572,9 @@ void beginOpenSelectedBook(
     app.readerPageIndex =
         0;
 
+    app.readerSemanticPosition =
+        SemanticPosition{};
+
     app.readerActiveTocIndex =
         -1;
 
@@ -7297,9 +7621,13 @@ void finishDocument(
         return;
     }
 
-    const bool relativeRelayout =
+    const bool semanticRelayout =
         app.pendingPosition ==
-        DocumentPosition::Relative;
+        DocumentPosition::Semantic;
+
+    const SemanticPosition
+        requestedSemanticPosition =
+            app.pendingSemanticPosition;
 
     app.readerPages =
         std::move(
@@ -7407,47 +7735,100 @@ void finishDocument(
             break;
         }
 
-        case DocumentPosition::Relative:
+        case DocumentPosition::Semantic:
         {
-            if (
-                app.readerPages.size() <= 1
-            )
-            {
-                app.readerPageIndex =
-                    0;
-            }
-            else
-            {
-                const double scaled =
-                    app.pendingRestoreRatio
-                    *
-                    static_cast<double>(
+            app.readerPageIndex =
+                std::clamp(
+                    findPageForSemanticPosition(
+                        app.readerPages,
+                        app.pendingSemanticPosition
+                    ),
+                    0,
+                    static_cast<int>(
                         app.readerPages.size()
-                        - 1
-                    );
-
-                app.readerPageIndex =
-                    std::clamp(
-                        static_cast<int>(
-                            scaled + 0.5
-                        ),
-                        0,
-                        static_cast<int>(
-                            app.readerPages.size()
-                        )
-                        - 1
-                    );
-            }
+                    )
+                    - 1
+                );
 
             debugLog(
-                "Relative position restored: ratio=%.3f -> page %d/%zu",
-                app.pendingRestoreRatio,
+                "SEMANTIC RESTORE: block=%llu offset=%llu text=%s -> page %d/%zu",
+                static_cast<unsigned long long>(
+                    app.pendingSemanticPosition
+                        .blockIndex
+                ),
+                static_cast<unsigned long long>(
+                    app.pendingSemanticPosition
+                        .textOffset
+                ),
+                app.pendingSemanticPosition
+                        .hasTextOffset
+                    ? "yes"
+                    : "no",
                 app.readerPageIndex + 1,
                 app.readerPages.size()
             );
 
             break;
         }
+    }
+
+    if (
+        semanticRelayout &&
+        requestedSemanticPosition.valid
+    )
+    {
+        /*
+         * Keep the exact requested semantic anchor. The restored page may
+         * begin earlier than the anchor, but using that earlier page start
+         * as the next anchor is what caused the cumulative drift.
+         */
+        app.readerSemanticPosition =
+            requestedSemanticPosition;
+
+        const SemanticPosition& pageTop =
+            app.readerPages[
+                app.readerPageIndex
+            ].sourcePosition;
+
+        debugLog(
+            "SEMANTIC ANCHOR KEPT: block=%llu offset=%llu text=%s pageTopBlock=%llu pageTopOffset=%llu",
+            static_cast<unsigned long long>(
+                app.readerSemanticPosition
+                    .blockIndex
+            ),
+            static_cast<unsigned long long>(
+                app.readerSemanticPosition
+                    .textOffset
+            ),
+            app.readerSemanticPosition
+                    .hasTextOffset
+                ? "yes"
+                : "no",
+            static_cast<unsigned long long>(
+                pageTop.blockIndex
+            ),
+            static_cast<unsigned long long>(
+                pageTop.textOffset
+            )
+        );
+    }
+    else if (
+        app.readerPageIndex >= 0 &&
+        app.readerPageIndex <
+            static_cast<int>(
+                app.readerPages.size()
+            )
+    )
+    {
+        app.readerSemanticPosition =
+            app.readerPages[
+                app.readerPageIndex
+            ].sourcePosition;
+    }
+    else
+    {
+        app.readerSemanticPosition =
+            SemanticPosition{};
     }
 
     app.tocSelected =
@@ -7465,6 +7846,9 @@ void finishDocument(
         -1;
 
     app.pendingFragment.clear();
+
+    app.pendingSemanticPosition =
+        SemanticPosition{};
 
     app.loadingStage =
         LoadingStage::None;
@@ -7499,7 +7883,7 @@ void finishDocument(
     );
 
     if (
-        relativeRelayout
+        semanticRelayout
     )
     {
         rememberCurrentProgress(
@@ -7618,12 +8002,15 @@ void processLoadingStage(
         scheduleDocumentLoad(
             app,
             progress.spineIndex,
-            DocumentPosition::Restore,
+            progress.semanticPosition.valid
+                ? DocumentPosition::Semantic
+                : DocumentPosition::Restore,
             progress.pageIndex,
             1,
             Screen::Library,
             "",
-            -1
+            -1,
+            progress.semanticPosition
         );
 
         return;
@@ -7799,6 +8186,9 @@ void closeReader(
     app.readerPageIndex =
         0;
 
+    app.readerSemanticPosition =
+        SemanticPosition{};
+
     app.readerActiveTocIndex =
         -1;
 
@@ -7872,6 +8262,11 @@ void setReaderPage(
     app.readerPageIndex =
         newPage;
 
+    app.readerSemanticPosition =
+        app.readerPages[
+            app.readerPageIndex
+        ].sourcePosition;
+
     clearTextCache(
         app
     );
@@ -7933,22 +8328,10 @@ void toggleReaderOrientation(
         return;
     }
 
-    double relativePosition = 0.0;
-
-    if (
-        app.readerPages.size() > 1
-    )
-    {
-        relativePosition =
-            static_cast<double>(
-                app.readerPageIndex
-            )
-            /
-            static_cast<double>(
-                app.readerPages.size()
-                - 1
-            );
-    }
+    const SemanticPosition semanticPosition =
+        currentReaderSemanticPosition(
+            app
+        );
 
     const Orientation next =
         app.orientation ==
@@ -7963,14 +8346,37 @@ void toggleReaderOrientation(
         app
     );
 
-    debugLog(
-        "Orientation changed to %s at relative position %.3f",
-        app.orientation ==
-            Orientation::Portrait
-        ? "portrait"
-        : "landscape",
-        relativePosition
-    );
+    if (
+        semanticPosition.valid
+    )
+    {
+        debugLog(
+            "Orientation changed to %s at semantic block=%llu offset=%llu text=%s",
+            app.orientation ==
+                Orientation::Portrait
+            ? "portrait"
+            : "landscape",
+            static_cast<unsigned long long>(
+                semanticPosition.blockIndex
+            ),
+            static_cast<unsigned long long>(
+                semanticPosition.textOffset
+            ),
+            semanticPosition.hasTextOffset
+                ? "yes"
+                : "no"
+        );
+    }
+    else
+    {
+        debugLog(
+            "Orientation changed to %s without semantic position",
+            app.orientation ==
+                Orientation::Portrait
+            ? "portrait"
+            : "landscape"
+        );
+    }
 
     destroyReaderImage(
         app
@@ -7979,13 +8385,15 @@ void toggleReaderOrientation(
     scheduleDocumentLoad(
         app,
         app.readerSpineIndex,
-        DocumentPosition::Relative,
-        0,
+        semanticPosition.valid
+            ? DocumentPosition::Semantic
+            : DocumentPosition::Restore,
+        app.readerPageIndex,
         1,
         Screen::Reader,
         "",
         app.readerActiveTocIndex,
-        relativePosition
+        semanticPosition
     );
 }
 
