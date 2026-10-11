@@ -1,0 +1,29 @@
+# Build / release output
+/build/
+/dist/
+/release/
+/cmake-build-*/
+
+# Generated PSP binaries
+*.PBP
+*.ELF
+*.PRX
+
+# Runtime files
+debug.log
+progress.tsv
+settings.cfg
+
+# Books / test material
+*.epub
+*.EPUB
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
