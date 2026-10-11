@@ -39,36 +39,12 @@ constexpr const char* DEBUG_LOG_PATH = "ms0:/PSP/GAME/LarpReader/debug.log";
 constexpr zip_uint64_t MAX_XML_SIZE = 4 * 1024 * 1024;
 constexpr zip_uint64_t MAX_IMAGE_SIZE = 16 * 1024 * 1024;
 
-enum class Screen {
-    Library,
-    Loading,
-    Reader,
-    Toc
-};
-
-enum class LoadingStage {
-    None,
-    OpenStructure,
-    LoadDocument,
-    LayoutDocument,
-    Error
-};
-
-enum class DocumentPosition {
-    Start,
-    End,
-    Restore
-};
-
-enum class BlockKind {
-    Text,
-    Image
-};
-
-enum class PageKind {
-    Text,
-    Image
-};
+enum class Screen { Library, Loading, Reader, Toc };
+enum class LoadingStage { None, OpenStructure, LoadDocument, LayoutDocument, Error };
+enum class DocumentPosition { Start, End, Restore };
+enum class BlockKind { Text, Image };
+enum class PageKind { Text, Image };
+enum class TextStyle { Regular, Italic, Heading };
 
 struct CachedText {
     SDL_Texture* texture = nullptr;
@@ -117,6 +93,7 @@ struct ContentBlock {
     std::string text;
     std::string imagePath;
     bool centered = false;
+    TextStyle style = TextStyle::Regular;
 };
 
 struct ChapterDocument {
@@ -130,6 +107,7 @@ struct ChapterDocument {
 struct TextLine {
     std::string text;
     bool centered = false;
+    TextStyle style = TextStyle::Regular;
 };
 
 struct DocumentPage {
@@ -149,7 +127,10 @@ struct App {
     SDL_Renderer* renderer = nullptr;
     TTF_Font* fontNormal = nullptr;
     TTF_Font* fontSmall = nullptr;
+    TTF_Font* fontSmallItalic = nullptr;
     TTF_Font* fontReader = nullptr;
+    TTF_Font* fontReaderItalic = nullptr;
+    TTF_Font* fontHeading = nullptr;
     SDL_GameController* controller = nullptr;
 
     std::vector<Book> books;
@@ -193,240 +174,83 @@ struct App {
     bool running = true;
 };
 
-void debugLog(
-    const char* format,
-    ...)
-{
-    FILE* file = std::fopen(
-        DEBUG_LOG_PATH,
-        "a"
-    );
-
-    if (!file)
-        return;
+void debugLog(const char* format, ...) {
+    FILE* file = std::fopen(DEBUG_LOG_PATH, "a");
+    if (!file) return;
 
     va_list args;
+    va_start(args, format);
+    std::vfprintf(file, format, args);
+    va_end(args);
 
-    va_start(
-        args,
-        format
-    );
-
-    std::vfprintf(
-        file,
-        format,
-        args
-    );
-
-    va_end(
-        args
-    );
-
-    std::fputc(
-        '\n',
-        file
-    );
-
-    std::fflush(
-        file
-    );
-
-    std::fclose(
-        file
-    );
+    std::fputc('\n', file);
+    std::fflush(file);
+    std::fclose(file);
 }
 
-void resetDebugLog()
-{
-    FILE* file = std::fopen(
-        DEBUG_LOG_PATH,
-        "w"
-    );
-
-    if (!file)
-        return;
-
-    std::fprintf(
-        file,
-        "Larp Reader 0.0.13 debug log\n"
-    );
-
-    std::fprintf(
-        file,
-        "============================\n"
-    );
-
-    std::fclose(
-        file
-    );
+void resetDebugLog() {
+    FILE* file = std::fopen(DEBUG_LOG_PATH, "w");
+    if (!file) return;
+    std::fprintf(file, "Larp Reader 0.0.14 debug log\n");
+    std::fprintf(file, "============================\n");
+    std::fclose(file);
 }
 
-std::string toLower(
-    std::string text)
-{
-    std::transform(
-        text.begin(),
-        text.end(),
-        text.begin(),
-        [](unsigned char c)
-        {
-            return static_cast<char>(
-                std::tolower(c)
-            );
-        }
-    );
-
+std::string toLower(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
     return text;
 }
 
-bool endsWithEpub(
-    const std::string& filename)
-{
-    if (
-        filename.size() < 5
-    )
-    {
-        return false;
-    }
-
-    return
-        toLower(
-            filename.substr(
-                filename.size() - 5
-            )
-        ) == ".epub";
+bool endsWithEpub(const std::string& filename) {
+    if (filename.size() < 5) return false;
+    return toLower(filename.substr(filename.size() - 5)) == ".epub";
 }
 
-int hexValue(
-    char c)
-{
-    if (
-        c >= '0' &&
-        c <= '9'
-    )
-    {
-        return c - '0';
-    }
-
-    if (
-        c >= 'a' &&
-        c <= 'f'
-    )
-    {
-        return 10 + c - 'a';
-    }
-
-    if (
-        c >= 'A' &&
-        c <= 'F'
-    )
-    {
-        return 10 + c - 'A';
-    }
-
+int hexValue(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+    if (c >= 'A' && c <= 'F') return 10 + c - 'A';
     return -1;
 }
 
-std::string percentDecode(
-    const std::string& input)
-{
+std::string percentDecode(const std::string& input) {
     std::string output;
+    output.reserve(input.size());
 
-    output.reserve(
-        input.size()
-    );
-
-    for (
-        std::size_t i = 0;
-        i < input.size();
-        ++i
-    )
-    {
-        if (
-            input[i] == '%' &&
-            i + 2 < input.size()
-        )
-        {
-            int high =
-                hexValue(
-                    input[i + 1]
-                );
-
-            int low =
-                hexValue(
-                    input[i + 2]
-                );
-
-            if (
-                high >= 0 &&
-                low >= 0
-            )
-            {
-                output +=
-                    static_cast<char>(
-                        (high << 4) |
-                        low
-                    );
-
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        if (input[i] == '%' && i + 2 < input.size()) {
+            int high = hexValue(input[i + 1]);
+            int low = hexValue(input[i + 2]);
+            if (high >= 0 && low >= 0) {
+                output += static_cast<char>((high << 4) | low);
                 i += 2;
-
                 continue;
             }
         }
-
-        output +=
-            input[i];
+        output += input[i];
     }
 
     return output;
 }
 
-const char* localName(
-    const char* name)
-{
-    if (!name)
-        return "";
-
-    const char* colon =
-        std::strchr(
-            name,
-            ':'
-        );
-
-    return
-        colon
-        ? colon + 1
-        : name;
+const char* localName(const char* name) {
+    if (!name) return "";
+    const char* colon = std::strchr(name, ':');
+    return colon ? colon + 1 : name;
 }
 
-const char* attributeByLocalName(
-    tinyxml2::XMLElement* element,
-    const char* wanted)
-{
-    if (!element)
-        return nullptr;
+const char* attributeByLocalName(tinyxml2::XMLElement* element, const char* wanted) {
+    if (!element) return nullptr;
 
     for (
-        const tinyxml2::XMLAttribute* a =
-            element->FirstAttribute();
-
+        const tinyxml2::XMLAttribute* a = element->FirstAttribute();
         a;
-
-        a =
-            a->Next()
-    )
-    {
-        if (
-            std::strcmp(
-                localName(
-                    a->Name()
-                ),
-                wanted
-            ) == 0
-        )
-        {
-            return
-                a->Value();
+        a = a->Next()
+    ) {
+        if (std::strcmp(localName(a->Name()), wanted) == 0) {
+            return a->Value();
         }
     }
 
@@ -435,47 +259,25 @@ const char* attributeByLocalName(
 
 tinyxml2::XMLElement* findElementByLocalName(
     tinyxml2::XMLNode* node,
-    const char* wanted)
-{
-    if (!node)
-        return nullptr;
+    const char* wanted
+) {
+    if (!node) return nullptr;
 
     for (
-        tinyxml2::XMLNode* child =
-            node->FirstChild();
-
+        tinyxml2::XMLNode* child = node->FirstChild();
         child;
-
-        child =
-            child->NextSibling()
-    )
-    {
-        if (
-            tinyxml2::XMLElement* e =
-                child->ToElement()
-        )
-        {
-            if (
-                std::strcmp(
-                    localName(
-                        e->Name()
-                    ),
-                    wanted
-                ) == 0
-            )
-            {
+        child = child->NextSibling()
+    ) {
+        if (tinyxml2::XMLElement* e = child->ToElement()) {
+            if (std::strcmp(localName(e->Name()), wanted) == 0) {
                 return e;
             }
         }
 
         if (
             tinyxml2::XMLElement* nested =
-                findElementByLocalName(
-                    child,
-                    wanted
-                )
-        )
-        {
+                findElementByLocalName(child, wanted)
+        ) {
             return nested;
         }
     }
@@ -485,30 +287,16 @@ tinyxml2::XMLElement* findElementByLocalName(
 
 tinyxml2::XMLElement* findDirectChildByLocalName(
     tinyxml2::XMLElement* parent,
-    const char* wanted)
-{
-    if (!parent)
-        return nullptr;
+    const char* wanted
+) {
+    if (!parent) return nullptr;
 
     for (
-        tinyxml2::XMLElement* child =
-            parent->FirstChildElement();
-
+        tinyxml2::XMLElement* child = parent->FirstChildElement();
         child;
-
-        child =
-            child->NextSiblingElement()
-    )
-    {
-        if (
-            std::strcmp(
-                localName(
-                    child->Name()
-                ),
-                wanted
-            ) == 0
-        )
-        {
+        child = child->NextSiblingElement()
+    ) {
+        if (std::strcmp(localName(child->Name()), wanted) == 0) {
             return child;
         }
     }
@@ -516,208 +304,75 @@ tinyxml2::XMLElement* findDirectChildByLocalName(
     return nullptr;
 }
 
-std::string elementText(
-    tinyxml2::XMLElement* element)
-{
-    if (
-        !element ||
-        !element->GetText()
-    )
-    {
-        return {};
-    }
-
-    return
-        element->GetText();
+std::string elementText(tinyxml2::XMLElement* element) {
+    if (!element || !element->GetText()) return {};
+    return element->GetText();
 }
 
 void replaceAll(
     std::string& value,
     const std::string& from,
-    const std::string& to)
-{
-    if (
-        from.empty()
-    )
-    {
-        return;
-    }
+    const std::string& to
+) {
+    if (from.empty()) return;
 
-    std::size_t pos =
-        0;
+    std::size_t pos = 0;
 
-    while (
-        (
-            pos =
-                value.find(
-                    from,
-                    pos
-                )
-        ) != std::string::npos
-    )
-    {
-        value.replace(
-            pos,
-            from.size(),
-            to
-        );
-
-        pos +=
-            to.size();
+    while ((pos = value.find(from, pos)) != std::string::npos) {
+        value.replace(pos, from.size(), to);
+        pos += to.size();
     }
 }
 
-std::string sanitizeXhtmlEntities(
-    std::string xml)
-{
-    replaceAll(
-        xml,
-        "&nbsp;",
-        "&#160;"
-    );
-
-    replaceAll(
-        xml,
-        "&ndash;",
-        "&#8211;"
-    );
-
-    replaceAll(
-        xml,
-        "&mdash;",
-        "&#8212;"
-    );
-
-    replaceAll(
-        xml,
-        "&hellip;",
-        "&#8230;"
-    );
-
-    replaceAll(
-        xml,
-        "&lsquo;",
-        "&#8216;"
-    );
-
-    replaceAll(
-        xml,
-        "&rsquo;",
-        "&#8217;"
-    );
-
-    replaceAll(
-        xml,
-        "&ldquo;",
-        "&#8220;"
-    );
-
-    replaceAll(
-        xml,
-        "&rdquo;",
-        "&#8221;"
-    );
-
-    replaceAll(
-        xml,
-        "&laquo;",
-        "&#171;"
-    );
-
-    replaceAll(
-        xml,
-        "&raquo;",
-        "&#187;"
-    );
-
-    replaceAll(
-        xml,
-        "&copy;",
-        "&#169;"
-    );
-
-    replaceAll(
-        xml,
-        "&reg;",
-        "&#174;"
-    );
-
-    replaceAll(
-        xml,
-        "&trade;",
-        "&#8482;"
-    );
-
+std::string sanitizeXhtmlEntities(std::string xml) {
+    replaceAll(xml, "&nbsp;", "&#160;");
+    replaceAll(xml, "&ndash;", "&#8211;");
+    replaceAll(xml, "&mdash;", "&#8212;");
+    replaceAll(xml, "&hellip;", "&#8230;");
+    replaceAll(xml, "&lsquo;", "&#8216;");
+    replaceAll(xml, "&rsquo;", "&#8217;");
+    replaceAll(xml, "&ldquo;", "&#8220;");
+    replaceAll(xml, "&rdquo;", "&#8221;");
+    replaceAll(xml, "&laquo;", "&#171;");
+    replaceAll(xml, "&raquo;", "&#187;");
+    replaceAll(xml, "&copy;", "&#169;");
+    replaceAll(xml, "&reg;", "&#174;");
+    replaceAll(xml, "&trade;", "&#8482;");
     return xml;
 }
 
-std::string normalizeText(
-    const std::string& input)
-{
+std::string normalizeText(const std::string& input) {
     std::string output;
+    bool pendingSpace = false;
 
-    bool pendingSpace =
-        false;
-
-    for (
-        std::size_t i = 0;
-        i < input.size();
-        ++i
-    )
-    {
+    for (std::size_t i = 0; i < input.size(); ++i) {
         unsigned char c =
-            static_cast<unsigned char>(
-                input[i]
-            );
+            static_cast<unsigned char>(input[i]);
 
         if (
             c == 0xC2 &&
             i + 1 < input.size() &&
-            static_cast<unsigned char>(
-                input[i + 1]
-            ) == 0xA0
-        )
-        {
-            pendingSpace =
-                !output.empty();
-
+            static_cast<unsigned char>(input[i + 1]) == 0xA0
+        ) {
+            pendingSpace = !output.empty();
             ++i;
-
             continue;
         }
 
-        if (
-            std::isspace(c)
-        )
-        {
-            pendingSpace =
-                !output.empty();
-
+        if (std::isspace(c)) {
+            pendingSpace = !output.empty();
             continue;
         }
 
-        if (
-            pendingSpace &&
-            !output.empty()
-        )
-        {
+        if (pendingSpace && !output.empty()) {
             output += ' ';
         }
 
-        pendingSpace =
-            false;
-
-        output +=
-            static_cast<char>(
-                c
-            );
+        pendingSpace = false;
+        output += static_cast<char>(c);
     }
 
-    while (
-        !output.empty() &&
-        output.back() == ' '
-    )
-    {
+    while (!output.empty() && output.back() == ' ') {
         output.pop_back();
     }
 
@@ -726,22 +381,13 @@ std::string normalizeText(
 
 void appendNodeText(
     tinyxml2::XMLNode* node,
-    std::string& output)
-{
-    if (!node)
-        return;
+    std::string& output
+) {
+    if (!node) return;
 
-    if (
-        tinyxml2::XMLText* text =
-            node->ToText()
-    )
-    {
-        if (
-            text->Value()
-        )
-        {
-            output +=
-                text->Value();
+    if (tinyxml2::XMLText* text = node->ToText()) {
+        if (text->Value()) {
+            output += text->Value();
         }
 
         return;
@@ -750,79 +396,47 @@ void appendNodeText(
     tinyxml2::XMLElement* element =
         node->ToElement();
 
-    if (
-        element
-    )
-    {
+    if (element) {
         const std::string name =
-            toLower(
-                localName(
-                    element->Name()
-                )
-            );
+            toLower(localName(element->Name()));
 
         if (
             name == "style" ||
             name == "script" ||
             name == "img" ||
             name == "svg"
-        )
-        {
+        ) {
             return;
         }
 
-        if (
-            name == "br"
-        )
-        {
+        if (name == "br") {
             output += ' ';
         }
     }
 
     for (
-        tinyxml2::XMLNode* child =
-            node->FirstChild();
-
+        tinyxml2::XMLNode* child = node->FirstChild();
         child;
-
-        child =
-            child->NextSibling()
-    )
-    {
-        appendNodeText(
-            child,
-            output
-        );
+        child = child->NextSibling()
+    ) {
+        appendNodeText(child, output);
     }
 }
 
-std::string nodeText(
-    tinyxml2::XMLNode* node)
-{
+std::string nodeText(tinyxml2::XMLNode* node) {
     std::string raw;
-
-    appendNodeText(
-        node,
-        raw
-    );
-
-    return
-        normalizeText(
-            raw
-        );
+    appendNodeText(node, raw);
+    return normalizeText(raw);
 }
 
 bool readZipEntry(
     zip_t* archive,
     const std::string& entryName,
     std::string& output,
-    std::string& error)
-{
+    std::string& error
+) {
     zip_stat_t statInfo;
-
-    zip_stat_init(
-        &statInfo
-    );
+    zip_stat_init(&statInfo);
 
     if (
         zip_stat(
@@ -831,8 +445,7 @@ bool readZipEntry(
             0,
             &statInfo
         ) != 0
-    )
-    {
+    ) {
         error =
             "Missing ZIP entry: "
             + entryName;
@@ -840,11 +453,7 @@ bool readZipEntry(
         return false;
     }
 
-    if (
-        statInfo.size >
-        MAX_XML_SIZE
-    )
-    {
+    if (statInfo.size > MAX_XML_SIZE) {
         error =
             "XML entry too large: "
             + entryName;
@@ -859,8 +468,7 @@ bool readZipEntry(
             0
         );
 
-    if (!file)
-    {
+    if (!file) {
         error =
             "Could not open ZIP entry: "
             + entryName;
@@ -874,14 +482,9 @@ bool readZipEntry(
         )
     );
 
-    zip_uint64_t totalRead =
-        0;
+    zip_uint64_t totalRead = 0;
 
-    while (
-        totalRead <
-        statInfo.size
-    )
-    {
+    while (totalRead < statInfo.size) {
         zip_int64_t readNow =
             zip_fread(
                 file,
@@ -889,17 +492,11 @@ bool readZipEntry(
                     + static_cast<std::size_t>(
                         totalRead
                     ),
-                statInfo.size
-                    - totalRead
+                statInfo.size - totalRead
             );
 
-        if (
-            readNow < 0
-        )
-        {
-            zip_fclose(
-                file
-            );
+        if (readNow < 0) {
+            zip_fclose(file);
 
             error =
                 "Error reading ZIP entry: "
@@ -908,10 +505,7 @@ bool readZipEntry(
             return false;
         }
 
-        if (
-            readNow == 0
-        )
-        {
+        if (readNow == 0) {
             break;
         }
 
@@ -921,9 +515,7 @@ bool readZipEntry(
             );
     }
 
-    zip_fclose(
-        file
-    );
+    zip_fclose(file);
 
     output.resize(
         static_cast<std::size_t>(
@@ -938,13 +530,10 @@ bool readZipEntryBytes(
     zip_t* archive,
     const std::string& entryName,
     std::vector<std::uint8_t>& output,
-    std::string& error)
-{
+    std::string& error
+) {
     zip_stat_t statInfo;
-
-    zip_stat_init(
-        &statInfo
-    );
+    zip_stat_init(&statInfo);
 
     if (
         zip_stat(
@@ -953,8 +542,7 @@ bool readZipEntryBytes(
             0,
             &statInfo
         ) != 0
-    )
-    {
+    ) {
         error =
             "Missing image: "
             + entryName;
@@ -962,14 +550,8 @@ bool readZipEntryBytes(
         return false;
     }
 
-    if (
-        statInfo.size >
-        MAX_IMAGE_SIZE
-    )
-    {
-        error =
-            "Image too large";
-
+    if (statInfo.size > MAX_IMAGE_SIZE) {
+        error = "Image too large";
         return false;
     }
 
@@ -980,11 +562,8 @@ bool readZipEntryBytes(
             0
         );
 
-    if (!file)
-    {
-        error =
-            "Could not open image";
-
+    if (!file) {
+        error = "Could not open image";
         return false;
     }
 
@@ -994,14 +573,9 @@ bool readZipEntryBytes(
         )
     );
 
-    zip_uint64_t totalRead =
-        0;
+    zip_uint64_t totalRead = 0;
 
-    while (
-        totalRead <
-        statInfo.size
-    )
-    {
+    while (totalRead < statInfo.size) {
         zip_int64_t readNow =
             zip_fread(
                 file,
@@ -1009,28 +583,16 @@ bool readZipEntryBytes(
                     + static_cast<std::size_t>(
                         totalRead
                     ),
-                statInfo.size
-                    - totalRead
+                statInfo.size - totalRead
             );
 
-        if (
-            readNow < 0
-        )
-        {
-            zip_fclose(
-                file
-            );
-
-            error =
-                "Could not read image";
-
+        if (readNow < 0) {
+            zip_fclose(file);
+            error = "Could not read image";
             return false;
         }
 
-        if (
-            readNow == 0
-        )
-        {
+        if (readNow == 0) {
             break;
         }
 
@@ -1040,9 +602,7 @@ bool readZipEntryBytes(
             );
     }
 
-    zip_fclose(
-        file
-    );
+    zip_fclose(file);
 
     output.resize(
         static_cast<std::size_t>(
@@ -1062,51 +622,30 @@ bool readZipEntryBytes(
 }
 
 std::string archiveDirectory(
-    const std::string& path)
-{
+    const std::string& path
+) {
     std::size_t pos =
-        path.find_last_of(
-            '/'
-        );
+        path.find_last_of('/');
 
-    if (
-        pos ==
-        std::string::npos
-    )
-    {
+    if (pos == std::string::npos) {
         return {};
     }
 
-    return
-        path.substr(
-            0,
-            pos + 1
-        );
+    return path.substr(0, pos + 1);
 }
 
 std::string normalizeArchivePath(
-    const std::string& path)
-{
-    std::vector<std::string>
-        parts;
+    const std::string& path
+) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
 
-    std::size_t start =
-        0;
-
-    while (
-        start <=
-        path.size()
-    )
-    {
+    while (start <= path.size()) {
         std::size_t slash =
-            path.find(
-                '/',
-                start
-            );
+            path.find('/', start);
 
         std::size_t end =
-            slash ==
-                std::string::npos
+            slash == std::string::npos
             ? path.size()
             : slash;
 
@@ -1119,37 +658,21 @@ std::string normalizeArchivePath(
         if (
             !part.empty() &&
             part != "."
-        )
-        {
-            if (
-                part == ".."
-            )
-            {
-                if (
-                    !parts.empty()
-                )
-                {
+        ) {
+            if (part == "..") {
+                if (!parts.empty()) {
                     parts.pop_back();
                 }
-            }
-            else
-            {
-                parts.push_back(
-                    part
-                );
+            } else {
+                parts.push_back(part);
             }
         }
 
-        if (
-            slash ==
-            std::string::npos
-        )
-        {
+        if (slash == std::string::npos) {
             break;
         }
 
-        start =
-            slash + 1;
+        start = slash + 1;
     }
 
     std::string result;
@@ -1158,17 +681,12 @@ std::string normalizeArchivePath(
         std::size_t i = 0;
         i < parts.size();
         ++i
-    )
-    {
-        if (
-            i
-        )
-        {
+    ) {
+        if (i) {
             result += '/';
         }
 
-        result +=
-            parts[i];
+        result += parts[i];
     }
 
     return result;
@@ -1181,23 +699,17 @@ struct ArchiveReference {
 
 ArchiveReference resolveArchiveReference(
     const std::string& baseDocumentPath,
-    const std::string& href)
-{
+    const std::string& href
+) {
     ArchiveReference result;
 
     std::string cleanHref =
         href;
 
     std::size_t fragmentPos =
-        cleanHref.find(
-            '#'
-        );
+        cleanHref.find('#');
 
-    if (
-        fragmentPos !=
-        std::string::npos
-    )
-    {
+    if (fragmentPos != std::string::npos) {
         result.fragment =
             percentDecode(
                 cleanHref.substr(
@@ -1205,42 +717,25 @@ ArchiveReference resolveArchiveReference(
                 )
             );
 
-        cleanHref.erase(
-            fragmentPos
-        );
+        cleanHref.erase(fragmentPos);
     }
 
     std::size_t queryPos =
-        cleanHref.find(
-            '?'
-        );
+        cleanHref.find('?');
 
-    if (
-        queryPos !=
-        std::string::npos
-    )
-    {
-        cleanHref.erase(
-            queryPos
-        );
+    if (queryPos != std::string::npos) {
+        cleanHref.erase(queryPos);
     }
 
     cleanHref =
-        percentDecode(
-            cleanHref
-        );
+        percentDecode(cleanHref);
 
-    if (
-        cleanHref.empty()
-    )
-    {
+    if (cleanHref.empty()) {
         result.path =
             normalizeArchivePath(
                 baseDocumentPath
             );
-    }
-    else
-    {
+    } else {
         result.path =
             normalizeArchivePath(
                 archiveDirectory(
@@ -1255,8 +750,8 @@ ArchiveReference resolveArchiveReference(
 
 std::string resolveArchivePath(
     const std::string& baseDocumentPath,
-    const std::string& href)
-{
+    const std::string& href
+) {
     return
         resolveArchiveReference(
             baseDocumentPath,
@@ -1266,34 +761,23 @@ std::string resolveArchivePath(
 
 bool propertyContainsToken(
     const std::string& properties,
-    const std::string& token)
-{
-    std::size_t start =
-        0;
+    const std::string& token
+) {
+    std::size_t start = 0;
 
-    while (
-        start <
-        properties.size()
-    )
-    {
+    while (start < properties.size()) {
         while (
-            start <
-                properties.size() &&
+            start < properties.size() &&
             std::isspace(
                 static_cast<unsigned char>(
                     properties[start]
                 )
             )
-        )
-        {
+        ) {
             ++start;
         }
 
-        if (
-            start >=
-            properties.size()
-        )
-        {
+        if (start >= properties.size()) {
             break;
         }
 
@@ -1301,15 +785,13 @@ bool propertyContainsToken(
             start;
 
         while (
-            end <
-                properties.size() &&
+            end < properties.size() &&
             !std::isspace(
                 static_cast<unsigned char>(
                     properties[end]
                 )
             )
-        )
-        {
+        ) {
             ++end;
         }
 
@@ -1318,13 +800,11 @@ bool propertyContainsToken(
                 start,
                 end - start
             ) == token
-        )
-        {
+        ) {
             return true;
         }
 
-        start =
-            end;
+        start = end;
     }
 
     return false;
@@ -1333,8 +813,8 @@ bool propertyContainsToken(
 bool parseContainer(
     zip_t* archive,
     std::string& opfPath,
-    std::string& error)
-{
+    std::string& error
+) {
     std::string xml;
 
     if (
@@ -1344,8 +824,7 @@ bool parseContainer(
             xml,
             error
         )
-    )
-    {
+    ) {
         return false;
     }
 
@@ -1355,13 +834,9 @@ bool parseContainer(
         document.Parse(
             xml.data(),
             xml.size()
-        ) !=
-        tinyxml2::XML_SUCCESS
-    )
-    {
-        error =
-            "Invalid container.xml";
-
+        ) != tinyxml2::XML_SUCCESS
+    ) {
+        error = "Invalid container.xml";
         return false;
     }
 
@@ -1371,8 +846,7 @@ bool parseContainer(
             "rootfile"
         );
 
-    if (!rootfile)
-    {
+    if (!rootfile) {
         error =
             "container.xml has no rootfile";
 
@@ -1387,16 +861,14 @@ bool parseContainer(
     if (
         !fullPath ||
         fullPath[0] == '\0'
-    )
-    {
+    ) {
         error =
             "rootfile has no full-path";
 
         return false;
     }
 
-    opfPath =
-        fullPath;
+    opfPath = fullPath;
 
     return true;
 }
@@ -1404,8 +876,8 @@ bool parseContainer(
 bool parsePackageMetadata(
     zip_t* archive,
     const std::string& opfPath,
-    Book& book)
-{
+    Book& book
+) {
     std::string xml;
     std::string error;
 
@@ -1416,11 +888,8 @@ bool parsePackageMetadata(
             xml,
             error
         )
-    )
-    {
-        book.error =
-            error;
-
+    ) {
+        book.error = error;
         return false;
     }
 
@@ -1430,10 +899,8 @@ bool parsePackageMetadata(
         document.Parse(
             xml.data(),
             xml.size()
-        ) !=
-        tinyxml2::XML_SUCCESS
-    )
-    {
+        ) != tinyxml2::XML_SUCCESS
+    ) {
         book.error =
             "Invalid OPF XML";
 
@@ -1446,8 +913,7 @@ bool parsePackageMetadata(
             "metadata"
         );
 
-    if (!metadata)
-    {
+    if (!metadata) {
         book.error =
             "OPF has no metadata";
 
@@ -1470,18 +936,12 @@ bool parsePackageMetadata(
             )
         );
 
-    if (
-        book.title.empty()
-    )
-    {
+    if (book.title.empty()) {
         book.title =
             book.filename;
     }
 
-    if (
-        book.author.empty()
-    )
-    {
+    if (book.author.empty()) {
         book.author =
             "Unknown author";
     }
@@ -1490,8 +950,8 @@ bool parsePackageMetadata(
 }
 
 Book loadBook(
-    const std::string& filename)
-{
+    const std::string& filename
+) {
     Book book;
 
     book.filename =
@@ -1504,8 +964,7 @@ Book loadBook(
         + "/"
         + filename;
 
-    int zipError =
-        0;
+    int zipError = 0;
 
     zip_t* archive =
         zip_open(
@@ -1514,8 +973,7 @@ Book loadBook(
             &zipError
         );
 
-    if (!archive)
-    {
+    if (!archive) {
         char buffer[128] = {};
 
         zip_error_to_str(
@@ -1542,15 +1000,9 @@ Book loadBook(
             book.opfPath,
             error
         )
-    )
-    {
-        book.error =
-            error;
-
-        zip_close(
-            archive
-        );
-
+    ) {
+        book.error = error;
+        zip_close(archive);
         return book;
     }
 
@@ -1560,27 +1012,19 @@ Book loadBook(
             book.opfPath,
             book
         )
-    )
-    {
-        zip_close(
-            archive
-        );
-
+    ) {
+        zip_close(archive);
         return book;
     }
 
-    zip_close(
-        archive
-    );
+    zip_close(archive);
 
-    book.valid =
-        true;
+    book.valid = true;
 
     return book;
 }
 
-std::vector<Book> scanBooks()
-{
+std::vector<Book> scanBooks() {
     std::vector<std::string>
         filenames;
 
@@ -1589,50 +1033,39 @@ std::vector<Book> scanBooks()
             BOOKS_PATH
         );
 
-    if (!directory)
+    if (!directory) {
         return {};
+    }
 
     while (
         dirent* entry =
-            readdir(
-                directory
-            )
-    )
-    {
+            readdir(directory)
+    ) {
         std::string filename =
             entry->d_name;
 
         if (
             filename == "." ||
             filename == ".."
-        )
-        {
+        ) {
             continue;
         }
 
-        if (
-            endsWithEpub(
-                filename
-            )
-        )
-        {
+        if (endsWithEpub(filename)) {
             filenames.push_back(
                 filename
             );
         }
     }
 
-    closedir(
-        directory
-    );
+    closedir(directory);
 
     std::sort(
         filenames.begin(),
         filenames.end()
     );
 
-    std::vector<Book>
-        books;
+    std::vector<Book> books;
 
     books.reserve(
         filenames.size()
@@ -1641,12 +1074,9 @@ std::vector<Book> scanBooks()
     for (
         const std::string& filename :
         filenames
-    )
-    {
+    ) {
         books.push_back(
-            loadBook(
-                filename
-            )
+            loadBook(filename)
         );
     }
 
@@ -1656,57 +1086,43 @@ std::vector<Book> scanBooks()
 void appendNavEntry(
     std::vector<TocEntry>& entries,
     const std::string& title,
-    const ArchiveReference& ref)
-{
+    const ArchiveReference& ref
+) {
     if (
         title.empty() ||
         ref.path.empty()
-    )
-    {
+    ) {
         return;
     }
 
     for (
         const TocEntry& existing :
         entries
-    )
-    {
+    ) {
         if (
-            existing.path ==
-                ref.path &&
-            existing.fragment ==
-                ref.fragment &&
-            existing.title ==
-                title
-        )
-        {
+            existing.path == ref.path &&
+            existing.fragment == ref.fragment &&
+            existing.title == title
+        ) {
             return;
         }
     }
 
     TocEntry entry;
 
-    entry.title =
-        title;
-
-    entry.path =
-        ref.path;
-
-    entry.fragment =
-        ref.fragment;
+    entry.title = title;
+    entry.path = ref.path;
+    entry.fragment = ref.fragment;
 
     entries.push_back(
-        std::move(
-            entry
-        )
+        std::move(entry)
     );
 }
 
 tinyxml2::XMLElement* findNavToc(
-    tinyxml2::XMLNode* node)
-{
-    if (!node)
-        return nullptr;
+    tinyxml2::XMLNode* node
+) {
+    if (!node) return nullptr;
 
     for (
         tinyxml2::XMLNode* child =
@@ -1716,13 +1132,11 @@ tinyxml2::XMLElement* findNavToc(
 
         child =
             child->NextSibling()
-    )
-    {
+    ) {
         if (
             tinyxml2::XMLElement* element =
                 child->ToElement()
-        )
-        {
+        ) {
             if (
                 std::strcmp(
                     localName(
@@ -1730,8 +1144,7 @@ tinyxml2::XMLElement* findNavToc(
                     ),
                     "nav"
                 ) == 0
-            )
-            {
+            ) {
                 const char* type =
                     attributeByLocalName(
                         element,
@@ -1744,8 +1157,7 @@ tinyxml2::XMLElement* findNavToc(
                         type,
                         "toc"
                     )
-                )
-                {
+                ) {
                     return element;
                 }
             }
@@ -1753,11 +1165,8 @@ tinyxml2::XMLElement* findNavToc(
 
         if (
             tinyxml2::XMLElement* nested =
-                findNavToc(
-                    child
-                )
-        )
-        {
+                findNavToc(child)
+        ) {
             return nested;
         }
     }
@@ -1768,16 +1177,14 @@ tinyxml2::XMLElement* findNavToc(
 void collectNavLinks(
     tinyxml2::XMLNode* node,
     const std::string& navPath,
-    std::vector<TocEntry>& entries)
-{
-    if (!node)
-        return;
+    std::vector<TocEntry>& entries
+) {
+    if (!node) return;
 
     if (
         tinyxml2::XMLElement* element =
             node->ToElement()
-    )
-    {
+    ) {
         if (
             std::strcmp(
                 localName(
@@ -1785,8 +1192,7 @@ void collectNavLinks(
                 ),
                 "a"
             ) == 0
-        )
-        {
+        ) {
             const char* href =
                 attributeByLocalName(
                     element,
@@ -1796,13 +1202,10 @@ void collectNavLinks(
             if (
                 href &&
                 href[0] != '\0'
-            )
-            {
+            ) {
                 appendNavEntry(
                     entries,
-                    nodeText(
-                        element
-                    ),
+                    nodeText(element),
                     resolveArchiveReference(
                         navPath,
                         href
@@ -1820,8 +1223,7 @@ void collectNavLinks(
 
         child =
             child->NextSibling()
-    )
-    {
+    ) {
         collectNavLinks(
             child,
             navPath,
@@ -1833,10 +1235,9 @@ void collectNavLinks(
 void collectNcxNavPoints(
     tinyxml2::XMLNode* node,
     const std::string& ncxPath,
-    std::vector<TocEntry>& entries)
-{
-    if (!node)
-        return;
+    std::vector<TocEntry>& entries
+) {
+    if (!node) return;
 
     for (
         tinyxml2::XMLNode* child =
@@ -1846,13 +1247,11 @@ void collectNcxNavPoints(
 
         child =
             child->NextSibling()
-    )
-    {
+    ) {
         tinyxml2::XMLElement* element =
             child->ToElement();
 
-        if (!element)
-            continue;
+        if (!element) continue;
 
         if (
             std::strcmp(
@@ -1861,8 +1260,7 @@ void collectNcxNavPoints(
                 ),
                 "navPoint"
             ) == 0
-        )
-        {
+        ) {
             tinyxml2::XMLElement* navLabel =
                 findDirectChildByLocalName(
                     element,
@@ -1883,24 +1281,17 @@ void collectNcxNavPoints(
 
             const char* src =
                 content
-                ? content->Attribute(
-                    "src"
-                )
+                ? content->Attribute("src")
                 : nullptr;
 
             if (
                 src &&
                 src[0] != '\0'
-            )
-            {
+            ) {
                 std::string title =
                     textElement
-                    ? nodeText(
-                        textElement
-                    )
-                    : nodeText(
-                        navLabel
-                    );
+                    ? nodeText(textElement)
+                    : nodeText(navLabel);
 
                 appendNavEntry(
                     entries,
@@ -1928,16 +1319,15 @@ std::vector<TocEntry> loadNavigationEntries(
         std::string,
         ManifestItem
     >& manifestItems,
-    tinyxml2::XMLElement* spine)
-{
+    tinyxml2::XMLElement* spine
+) {
     std::vector<TocEntry>
         navEntries;
 
     for (
         const auto& pair :
         manifestItems
-    )
-    {
+    ) {
         const ManifestItem& item =
             pair.second;
 
@@ -1948,8 +1338,7 @@ std::vector<TocEntry> loadNavigationEntries(
                 item.properties,
                 "nav"
             )
-        )
-        {
+        ) {
             continue;
         }
 
@@ -1969,16 +1358,13 @@ std::vector<TocEntry> loadNavigationEntries(
                 xml,
                 error
             )
-        )
-        {
+        ) {
             continue;
         }
 
         xml =
             sanitizeXhtmlEntities(
-                std::move(
-                    xml
-                )
+                std::move(xml)
             );
 
         tinyxml2::XMLDocument document;
@@ -1987,10 +1373,8 @@ std::vector<TocEntry> loadNavigationEntries(
             document.Parse(
                 xml.data(),
                 xml.size()
-            ) !=
-            tinyxml2::XML_SUCCESS
-        )
-        {
+            ) != tinyxml2::XML_SUCCESS
+        ) {
             continue;
         }
 
@@ -1999,8 +1383,7 @@ std::vector<TocEntry> loadNavigationEntries(
                 &document
             );
 
-        if (!nav)
-        {
+        if (!nav) {
             nav =
                 findElementByLocalName(
                     &document,
@@ -2008,10 +1391,7 @@ std::vector<TocEntry> loadNavigationEntries(
                 );
         }
 
-        if (
-            nav
-        )
-        {
+        if (nav) {
             collectNavLinks(
                 nav,
                 navPath,
@@ -2020,10 +1400,7 @@ std::vector<TocEntry> loadNavigationEntries(
         }
     }
 
-    if (
-        !navEntries.empty()
-    )
-    {
+    if (!navEntries.empty()) {
         debugLog(
             "Using EPUB 3 NAV: %zu entries",
             navEntries.size()
@@ -2037,15 +1414,10 @@ std::vector<TocEntry> loadNavigationEntries(
 
     const char* tocId =
         spine
-        ? spine->Attribute(
-            "toc"
-        )
+        ? spine->Attribute("toc")
         : nullptr;
 
-    if (
-        tocId
-    )
-    {
+    if (tocId) {
         auto found =
             manifestItems.find(
                 tocId
@@ -2054,25 +1426,21 @@ std::vector<TocEntry> loadNavigationEntries(
         if (
             found !=
             manifestItems.end()
-        )
-        {
+        ) {
             ncxItem =
                 &found->second;
         }
     }
 
-    if (!ncxItem)
-    {
+    if (!ncxItem) {
         for (
             const auto& pair :
             manifestItems
-        )
-        {
+        ) {
             if (
                 pair.second.mediaType ==
                 "application/x-dtbncx+xml"
-            )
-            {
+            ) {
                 ncxItem =
                     &pair.second;
 
@@ -2081,8 +1449,9 @@ std::vector<TocEntry> loadNavigationEntries(
         }
     }
 
-    if (!ncxItem)
+    if (!ncxItem) {
         return {};
+    }
 
     std::string ncxPath =
         resolveArchivePath(
@@ -2100,8 +1469,7 @@ std::vector<TocEntry> loadNavigationEntries(
             xml,
             error
         )
-    )
-    {
+    ) {
         return {};
     }
 
@@ -2111,10 +1479,8 @@ std::vector<TocEntry> loadNavigationEntries(
         document.Parse(
             xml.data(),
             xml.size()
-        ) !=
-        tinyxml2::XML_SUCCESS
-    )
-    {
+        ) != tinyxml2::XML_SUCCESS
+    ) {
         return {};
     }
 
@@ -2127,10 +1493,7 @@ std::vector<TocEntry> loadNavigationEntries(
     std::vector<TocEntry>
         ncxEntries;
 
-    if (
-        navMap
-    )
-    {
+    if (navMap) {
         collectNcxNavPoints(
             navMap,
             ncxPath,
@@ -2148,21 +1511,17 @@ std::vector<TocEntry> loadNavigationEntries(
 
 std::string fallbackSpineTitle(
     const std::string& path,
-    int index)
-{
+    int index
+) {
     std::string filename =
         path;
 
     std::size_t slash =
-        filename.find_last_of(
-            '/'
-        );
+        filename.find_last_of('/');
 
     if (
-        slash !=
-        std::string::npos
-    )
-    {
+        slash != std::string::npos
+    ) {
         filename.erase(
             0,
             slash + 1
@@ -2170,140 +1529,89 @@ std::string fallbackSpineTitle(
     }
 
     std::string lower =
-        toLower(
-            filename
-        );
+        toLower(filename);
 
     if (
-        lower.find(
-            "cover"
-        ) !=
-            std::string::npos ||
-        lower.find(
-            "cubierta"
-        ) !=
-            std::string::npos
-    )
-    {
+        lower.find("cover") != std::string::npos ||
+        lower.find("cubierta") != std::string::npos
+    ) {
         return "Cover";
     }
 
     if (
-        lower.find(
-            "title"
-        ) !=
-        std::string::npos
-    )
-    {
+        lower.find("title") != std::string::npos
+    ) {
         return "Title page";
     }
 
     if (
-        lower.find(
-            "prologo"
-        ) !=
-        std::string::npos
-    )
-    {
+        lower.find("prologo") != std::string::npos
+    ) {
         return "Prólogo";
     }
 
     if (
-        lower.find(
-            "epilogo"
-        ) !=
-        std::string::npos
-    )
-    {
+        lower.find("epilogo") != std::string::npos
+    ) {
         return "Epílogo";
     }
 
     if (
-        lower.find(
-            "autor"
-        ) !=
-        std::string::npos
-    )
-    {
+        lower.find("autor") != std::string::npos
+    ) {
         return "Autor";
     }
 
     if (
-        lower.find(
-            "editor"
-        ) !=
-        std::string::npos
-    )
-    {
+        lower.find("editor") != std::string::npos
+    ) {
         return "Editor";
     }
 
     if (
-        lower.find(
-            "info"
-        ) !=
-        std::string::npos
-    )
-    {
+        lower.find("info") != std::string::npos
+    ) {
         return "Información";
     }
 
     if (
-        lower.find(
-            "sinopsis"
-        ) !=
-        std::string::npos
-    )
-    {
+        lower.find("sinopsis") != std::string::npos
+    ) {
         return "Sinopsis";
     }
 
     if (
-        lower.find(
-            "about"
-        ) !=
-        std::string::npos
-    )
-    {
+        lower.find("about") != std::string::npos
+    ) {
         return "About";
     }
 
     if (
-        lower.find(
-            "copyright"
-        ) !=
-        std::string::npos
-    )
-    {
+        lower.find("copyright") != std::string::npos
+    ) {
         return "Copyright";
     }
 
     return
         "Section "
-        + std::to_string(
-            index + 1
-        );
+        + std::to_string(index + 1);
 }
 
 int findSpineIndexByPath(
     const std::vector<SpineItem>& spine,
-    const std::string& path)
-{
+    const std::string& path
+) {
     for (
         std::size_t i = 0;
         i < spine.size();
         ++i
-    )
-    {
+    ) {
         if (
             spine[i].path ==
             path
-        )
-        {
+        ) {
             return
-                static_cast<int>(
-                    i
-                );
+                static_cast<int>(i);
         }
     }
 
@@ -2312,18 +1620,16 @@ int findSpineIndexByPath(
 
 bool tocHasSpineIndex(
     const std::vector<TocEntry>& toc,
-    int spineIndex)
-{
+    int spineIndex
+) {
     for (
         const TocEntry& entry :
         toc
-    )
-    {
+    ) {
         if (
             entry.spineIndex ==
             spineIndex
-        )
-        {
+        ) {
             return true;
         }
     }
@@ -2332,12 +1638,11 @@ bool tocHasSpineIndex(
 }
 
 ReaderStructure loadReaderStructure(
-    const Book& book)
-{
+    const Book& book
+) {
     ReaderStructure result;
 
-    int zipError =
-        0;
+    int zipError = 0;
 
     zip_t* archive =
         zip_open(
@@ -2346,8 +1651,7 @@ ReaderStructure loadReaderStructure(
             &zipError
         );
 
-    if (!archive)
-    {
+    if (!archive) {
         result.error =
             "Could not reopen EPUB";
 
@@ -2364,15 +1668,9 @@ ReaderStructure loadReaderStructure(
             opfXml,
             error
         )
-    )
-    {
-        result.error =
-            error;
-
-        zip_close(
-            archive
-        );
-
+    ) {
+        result.error = error;
+        zip_close(archive);
         return result;
     }
 
@@ -2382,17 +1680,12 @@ ReaderStructure loadReaderStructure(
         document.Parse(
             opfXml.data(),
             opfXml.size()
-        ) !=
-        tinyxml2::XML_SUCCESS
-    )
-    {
+        ) != tinyxml2::XML_SUCCESS
+    ) {
         result.error =
             "Invalid OPF";
 
-        zip_close(
-            archive
-        );
-
+        zip_close(archive);
         return result;
     }
 
@@ -2411,15 +1704,11 @@ ReaderStructure loadReaderStructure(
     if (
         !manifest ||
         !spine
-    )
-    {
+    ) {
         result.error =
             "OPF has no manifest/spine";
 
-        zip_close(
-            archive
-        );
-
+        zip_close(archive);
         return result;
     }
 
@@ -2436,8 +1725,7 @@ ReaderStructure loadReaderStructure(
 
         item =
             item->NextSiblingElement()
-    )
-    {
+    ) {
         if (
             std::strcmp(
                 localName(
@@ -2445,46 +1733,35 @@ ReaderStructure loadReaderStructure(
                 ),
                 "item"
             ) != 0
-        )
-        {
+        ) {
             continue;
         }
 
         const char* id =
-            item->Attribute(
-                "id"
-            );
+            item->Attribute("id");
 
         const char* href =
-            item->Attribute(
-                "href"
-            );
+            item->Attribute("href");
 
         if (
             !id ||
             !href
-        )
-        {
+        ) {
             continue;
         }
 
         ManifestItem m;
 
-        m.id =
-            id;
-
-        m.href =
-            href;
+        m.id = id;
+        m.href = href;
 
         if (
             const char* media =
                 item->Attribute(
                     "media-type"
                 )
-        )
-        {
-            m.mediaType =
-                media;
+        ) {
+            m.mediaType = media;
         }
 
         if (
@@ -2492,18 +1769,13 @@ ReaderStructure loadReaderStructure(
                 item->Attribute(
                     "properties"
                 )
-        )
-        {
-            m.properties =
-                props;
+        ) {
+            m.properties = props;
         }
 
         manifestItems[
             m.id
-        ] =
-            std::move(
-                m
-            );
+        ] = std::move(m);
     }
 
     for (
@@ -2514,8 +1786,7 @@ ReaderStructure loadReaderStructure(
 
         itemRef =
             itemRef->NextSiblingElement()
-    )
-    {
+    ) {
         if (
             std::strcmp(
                 localName(
@@ -2523,8 +1794,7 @@ ReaderStructure loadReaderStructure(
                 ),
                 "itemref"
             ) != 0
-        )
-        {
+        ) {
             continue;
         }
 
@@ -2533,8 +1803,9 @@ ReaderStructure loadReaderStructure(
                 "idref"
             );
 
-        if (!idref)
+        if (!idref) {
             continue;
+        }
 
         const char* linear =
             itemRef->Attribute(
@@ -2547,8 +1818,7 @@ ReaderStructure loadReaderStructure(
                 linear,
                 "no"
             ) == 0
-        )
-        {
+        ) {
             continue;
         }
 
@@ -2560,8 +1830,7 @@ ReaderStructure loadReaderStructure(
         if (
             found ==
             manifestItems.end()
-        )
-        {
+        ) {
             continue;
         }
 
@@ -2571,8 +1840,7 @@ ReaderStructure loadReaderStructure(
         if (
             item.mediaType !=
             "application/xhtml+xml"
-        )
-        {
+        ) {
             continue;
         }
 
@@ -2581,8 +1849,7 @@ ReaderStructure loadReaderStructure(
                 item.properties,
                 "nav"
             )
-        )
-        {
+        ) {
             continue;
         }
 
@@ -2596,8 +1863,7 @@ ReaderStructure loadReaderStructure(
 
         if (
             s.path.empty()
-        )
-        {
+        ) {
             continue;
         }
 
@@ -2610,23 +1876,17 @@ ReaderStructure loadReaderStructure(
             );
 
         result.spine.push_back(
-            std::move(
-                s
-            )
+            std::move(s)
         );
     }
 
     if (
         result.spine.empty()
-    )
-    {
+    ) {
         result.error =
             "No readable spine items";
 
-        zip_close(
-            archive
-        );
-
+        zip_close(archive);
         return result;
     }
 
@@ -2638,15 +1898,12 @@ ReaderStructure loadReaderStructure(
             spine
         );
 
-    zip_close(
-        archive
-    );
+    zip_close(archive);
 
     for (
         TocEntry entry :
         rawToc
-    )
-    {
+    ) {
         entry.spineIndex =
             findSpineIndexByPath(
                 result.spine,
@@ -2655,15 +1912,12 @@ ReaderStructure loadReaderStructure(
 
         if (
             entry.spineIndex < 0
-        )
-        {
+        ) {
             continue;
         }
 
         result.toc.push_back(
-            std::move(
-                entry
-            )
+            std::move(entry)
         );
     }
 
@@ -2673,24 +1927,16 @@ ReaderStructure loadReaderStructure(
             result.toc,
             0
         )
-    )
-    {
+    ) {
         std::string firstLower =
             toLower(
                 result.spine[0].path
             );
 
         if (
-            firstLower.find(
-                "cover"
-            ) !=
-                std::string::npos ||
-            firstLower.find(
-                "cubierta"
-            ) !=
-                std::string::npos
-        )
-        {
+            firstLower.find("cover") != std::string::npos ||
+            firstLower.find("cubierta") != std::string::npos
+        ) {
             TocEntry cover;
 
             cover.title =
@@ -2699,28 +1945,23 @@ ReaderStructure loadReaderStructure(
             cover.path =
                 result.spine[0].path;
 
-            cover.spineIndex =
-                0;
+            cover.spineIndex = 0;
 
             result.toc.insert(
                 result.toc.begin(),
-                std::move(
-                    cover
-                )
+                std::move(cover)
             );
         }
     }
 
     if (
         result.toc.empty()
-    )
-    {
+    ) {
         for (
             std::size_t i = 0;
             i < result.spine.size();
             ++i
-        )
-        {
+        ) {
             TocEntry entry;
 
             entry.title =
@@ -2730,14 +1971,10 @@ ReaderStructure loadReaderStructure(
                 result.spine[i].path;
 
             entry.spineIndex =
-                static_cast<int>(
-                    i
-                );
+                static_cast<int>(i);
 
             result.toc.push_back(
-                std::move(
-                    entry
-                )
+                std::move(entry)
             );
         }
     }
@@ -2745,12 +1982,10 @@ ReaderStructure loadReaderStructure(
     for (
         const TocEntry& entry :
         result.toc
-    )
-    {
+    ) {
         if (
             entry.fragment.empty()
-        )
-        {
+        ) {
             result.spine[
                 entry.spineIndex
             ].title =
@@ -2762,8 +1997,7 @@ ReaderStructure loadReaderStructure(
         std::size_t i = 0;
         i < result.spine.size();
         ++i
-    )
-    {
+    ) {
         debugLog(
             "SPINE %zu: %s -> %s",
             i + 1,
@@ -2776,8 +2010,7 @@ ReaderStructure loadReaderStructure(
         std::size_t i = 0;
         i < result.toc.size();
         ++i
-    )
-    {
+    ) {
         debugLog(
             "TOC %zu: spine=%d path=%s fragment=%s title=%s",
             i + 1,
@@ -2790,15 +2023,14 @@ ReaderStructure loadReaderStructure(
         );
     }
 
-    result.valid =
-        true;
+    result.valid = true;
 
     return result;
 }
 
 bool isIgnoredElementName(
-    const std::string& name)
-{
+    const std::string& name
+) {
     return
         name == "head" ||
         name == "style" ||
@@ -2807,8 +2039,8 @@ bool isIgnoredElementName(
 }
 
 bool isTextBlockName(
-    const std::string& name)
-{
+    const std::string& name
+) {
     return
         name == "p" ||
         name == "div" ||
@@ -2829,57 +2061,45 @@ bool isTextBlockName(
 
 bool classContains(
     const char* classValue,
-    const char* token)
-{
+    const char* token
+) {
     if (
         !classValue ||
         !token
-    )
-    {
+    ) {
         return false;
     }
 
     std::string classes =
-        toLower(
-            classValue
-        );
+        toLower(classValue);
 
     return
         classes.find(
-            toLower(
-                token
-            )
-        ) !=
-        std::string::npos;
+            toLower(token)
+        ) != std::string::npos;
 }
 
 bool styleContainsCentered(
-    const char* styleValue)
-{
-    if (!styleValue)
+    const char* styleValue
+) {
+    if (!styleValue) {
         return false;
+    }
 
     std::string style =
-        toLower(
-            styleValue
-        );
+        toLower(styleValue);
 
     return
-        style.find(
-            "text-align"
-        ) !=
-            std::string::npos &&
-        style.find(
-            "center"
-        ) !=
-            std::string::npos;
+        style.find("text-align") != std::string::npos &&
+        style.find("center") != std::string::npos;
 }
 
 bool elementIsCentered(
-    tinyxml2::XMLElement* element)
-{
-    if (!element)
+    tinyxml2::XMLElement* element
+) {
+    if (!element) {
         return false;
+    }
 
     std::string name =
         toLower(
@@ -2895,8 +2115,7 @@ bool elementIsCentered(
         name == "h4" ||
         name == "h5" ||
         name == "h6"
-    )
-    {
+    ) {
         return true;
     }
 
@@ -2930,8 +2149,7 @@ bool elementIsCentered(
             classes,
             "fin"
         )
-    )
-    {
+    ) {
         return true;
     }
 
@@ -2943,11 +2161,117 @@ bool elementIsCentered(
         );
 }
 
-bool hasDirectStructuralChild(
-    tinyxml2::XMLElement* element)
-{
-    if (!element)
+bool isHeadingName(
+    const std::string& name
+) {
+    return
+        name == "h1" ||
+        name == "h2" ||
+        name == "h3" ||
+        name == "h4" ||
+        name == "h5" ||
+        name == "h6";
+}
+
+bool hasNonWhitespaceDirectText(
+    tinyxml2::XMLElement* element
+) {
+    if (!element) {
         return false;
+    }
+
+    for (
+        tinyxml2::XMLNode* child =
+            element->FirstChild();
+
+        child;
+
+        child =
+            child->NextSibling()
+    ) {
+        tinyxml2::XMLText* text =
+            child->ToText();
+
+        if (
+            !text ||
+            !text->Value()
+        ) {
+            continue;
+        }
+
+        const char* value =
+            text->Value();
+
+        for (
+            const unsigned char* p =
+                reinterpret_cast<
+                    const unsigned char*
+                >(value);
+
+            *p;
+
+            ++p
+        ) {
+            if (!std::isspace(*p)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool blockIsEntirelyItalic(
+    tinyxml2::XMLElement* element
+) {
+    if (!element) {
+        return false;
+    }
+
+    const char* styleValue =
+        element->Attribute(
+            "style"
+        );
+
+    if (styleValue) {
+        std::string style =
+            toLower(styleValue);
+
+        if (
+            style.find("font-style") != std::string::npos &&
+            style.find("italic") != std::string::npos
+        ) {
+            return true;
+        }
+    }
+
+    const char* classValue =
+        element->Attribute(
+            "class"
+        );
+
+    if (classValue) {
+        std::string classes =
+            toLower(classValue);
+
+        if (
+            classes.find("italic") != std::string::npos ||
+            classes.find("cursiva") != std::string::npos
+        ) {
+            return true;
+        }
+    }
+
+    if (
+        hasNonWhitespaceDirectText(
+            element
+        )
+    ) {
+        return false;
+    }
+
+    bool foundStyledChild =
+        false;
 
     for (
         tinyxml2::XMLElement* child =
@@ -2957,8 +2281,76 @@ bool hasDirectStructuralChild(
 
         child =
             child->NextSiblingElement()
-    )
-    {
+    ) {
+        std::string childName =
+            toLower(
+                localName(
+                    child->Name()
+                )
+            );
+
+        if (
+            childName == "i" ||
+            childName == "em"
+        ) {
+            foundStyledChild =
+                true;
+
+            continue;
+        }
+
+        if (
+            childName == "br"
+        ) {
+            continue;
+        }
+
+        return false;
+    }
+
+    return foundStyledChild;
+}
+
+TextStyle textStyleForElement(
+    tinyxml2::XMLElement* element,
+    const std::string& name
+) {
+    if (
+        isHeadingName(name)
+    ) {
+        return
+            TextStyle::Heading;
+    }
+
+    if (
+        blockIsEntirelyItalic(
+            element
+        )
+    ) {
+        return
+            TextStyle::Italic;
+    }
+
+    return
+        TextStyle::Regular;
+}
+
+bool hasDirectStructuralChild(
+    tinyxml2::XMLElement* element
+) {
+    if (!element) {
+        return false;
+    }
+
+    for (
+        tinyxml2::XMLElement* child =
+            element->FirstChildElement();
+
+        child;
+
+        child =
+            child->NextSiblingElement()
+    ) {
         std::string name =
             toLower(
                 localName(
@@ -2969,11 +2361,8 @@ bool hasDirectStructuralChild(
         if (
             name == "img" ||
             name == "svg" ||
-            isTextBlockName(
-                name
-            )
-        )
-        {
+            isTextBlockName(name)
+        ) {
             return true;
         }
     }
@@ -2982,16 +2371,16 @@ bool hasDirectStructuralChild(
 }
 
 std::string firstSvgImageReference(
-    tinyxml2::XMLNode* node)
-{
-    if (!node)
+    tinyxml2::XMLNode* node
+) {
+    if (!node) {
         return {};
+    }
 
     if (
         tinyxml2::XMLElement* element =
             node->ToElement()
-    )
-    {
+    ) {
         std::string name =
             toLower(
                 localName(
@@ -3001,8 +2390,7 @@ std::string firstSvgImageReference(
 
         if (
             name == "image"
-        )
-        {
+        ) {
             const char* href =
                 attributeByLocalName(
                     element,
@@ -3012,8 +2400,7 @@ std::string firstSvgImageReference(
             if (
                 href &&
                 href[0] != '\0'
-            )
-            {
+            ) {
                 return href;
             }
         }
@@ -3027,17 +2414,13 @@ std::string firstSvgImageReference(
 
         child =
             child->NextSibling()
-    )
-    {
+    ) {
         std::string result =
             firstSvgImageReference(
                 child
             );
 
-        if (
-            !result.empty()
-        )
-        {
+        if (!result.empty()) {
             return result;
         }
     }
@@ -3049,16 +2432,16 @@ void collectContentBlocks(
     tinyxml2::XMLNode* node,
     const std::string& xhtmlPath,
     bool inheritedCentered,
-    std::vector<ContentBlock>& blocks)
-{
-    if (!node)
+    std::vector<ContentBlock>& blocks
+) {
+    if (!node) {
         return;
+    }
 
     tinyxml2::XMLElement* element =
         node->ToElement();
 
-    if (!element)
-    {
+    if (!element) {
         for (
             tinyxml2::XMLNode* child =
                 node->FirstChild();
@@ -3067,8 +2450,7 @@ void collectContentBlocks(
 
             child =
                 child->NextSibling()
-        )
-        {
+        ) {
             collectContentBlocks(
                 child,
                 xhtmlPath,
@@ -3088,24 +2470,18 @@ void collectContentBlocks(
         );
 
     if (
-        isIgnoredElementName(
-            name
-        )
-    )
-    {
+        isIgnoredElementName(name)
+    ) {
         return;
     }
 
     bool centered =
         inheritedCentered ||
-        elementIsCentered(
-            element
-        );
+        elementIsCentered(element);
 
     if (
         name == "img"
-    )
-    {
+    ) {
         const char* src =
             attributeByLocalName(
                 element,
@@ -3115,8 +2491,7 @@ void collectContentBlocks(
         if (
             src &&
             src[0] != '\0'
-        )
-        {
+        ) {
             ContentBlock block;
 
             block.kind =
@@ -3132,9 +2507,7 @@ void collectContentBlocks(
                 true;
 
             blocks.push_back(
-                std::move(
-                    block
-                )
+                std::move(block)
             );
         }
 
@@ -3143,8 +2516,7 @@ void collectContentBlocks(
 
     if (
         name == "svg"
-    )
-    {
+    ) {
         std::string href =
             firstSvgImageReference(
                 element
@@ -3152,8 +2524,7 @@ void collectContentBlocks(
 
         if (
             !href.empty()
-        )
-        {
+        ) {
             ContentBlock block;
 
             block.kind =
@@ -3169,9 +2540,7 @@ void collectContentBlocks(
                 true;
 
             blocks.push_back(
-                std::move(
-                    block
-                )
+                std::move(block)
             );
         }
 
@@ -3179,40 +2548,36 @@ void collectContentBlocks(
     }
 
     if (
-        isTextBlockName(
-            name
-        ) &&
+        isTextBlockName(name) &&
         !hasDirectStructuralChild(
             element
         )
-    )
-    {
+    ) {
         std::string text =
-            nodeText(
-                element
-            );
+            nodeText(element);
 
         if (
             !text.empty()
-        )
-        {
+        ) {
             ContentBlock block;
 
             block.kind =
                 BlockKind::Text;
 
             block.text =
-                std::move(
-                    text
-                );
+                std::move(text);
 
             block.centered =
                 centered;
 
+            block.style =
+                textStyleForElement(
+                    element,
+                    name
+                );
+
             blocks.push_back(
-                std::move(
-                    block
-                )
+                std::move(block)
             );
         }
 
@@ -3227,8 +2592,7 @@ void collectContentBlocks(
 
         child =
             child->NextSibling()
-    )
-    {
+    ) {
         collectContentBlocks(
             child,
             xhtmlPath,
@@ -3240,15 +2604,14 @@ void collectContentBlocks(
 
 ChapterDocument loadChapterDocument(
     const Book& book,
-    const std::string& chapterPath)
-{
+    const std::string& chapterPath
+) {
     ChapterDocument result;
 
     result.path =
         chapterPath;
 
-    int zipError =
-        0;
+    int zipError = 0;
 
     zip_t* archive =
         zip_open(
@@ -3257,8 +2620,7 @@ ChapterDocument loadChapterDocument(
             &zipError
         );
 
-    if (!archive)
-    {
+    if (!archive) {
         result.error =
             "Could not reopen EPUB";
 
@@ -3274,24 +2636,16 @@ ChapterDocument loadChapterDocument(
             xml,
             result.error
         )
-    )
-    {
-        zip_close(
-            archive
-        );
-
+    ) {
+        zip_close(archive);
         return result;
     }
 
-    zip_close(
-        archive
-    );
+    zip_close(archive);
 
     xml =
         sanitizeXhtmlEntities(
-            std::move(
-                xml
-            )
+            std::move(xml)
         );
 
     tinyxml2::XMLDocument document;
@@ -3305,8 +2659,7 @@ ChapterDocument loadChapterDocument(
     if (
         parseResult !=
         tinyxml2::XML_SUCCESS
-    )
-    {
+    ) {
         result.error =
             "Invalid XHTML";
 
@@ -3327,8 +2680,7 @@ ChapterDocument loadChapterDocument(
             "body"
         );
 
-    if (!body)
-    {
+    if (!body) {
         result.error =
             "XHTML has no body";
 
@@ -3341,16 +2693,13 @@ ChapterDocument loadChapterDocument(
     collectContentBlocks(
         body,
         chapterPath,
-        elementIsCentered(
-            body
-        ),
+        elementIsCentered(body),
         result.blocks
     );
 
     if (
         result.blocks.empty()
-    )
-    {
+    ) {
         result.error =
             "Spine item contains no supported content";
 
@@ -3360,26 +2709,19 @@ ChapterDocument loadChapterDocument(
         return result;
     }
 
-    int textBlocks =
-        0;
-
-    int imageBlocks =
-        0;
+    int textBlocks = 0;
+    int imageBlocks = 0;
 
     for (
         const ContentBlock& block :
         result.blocks
-    )
-    {
+    ) {
         if (
             block.kind ==
             BlockKind::Image
-        )
-        {
+        ) {
             ++imageBlocks;
-        }
-        else
-        {
+        } else {
             ++textBlocks;
         }
     }
@@ -3392,15 +2734,12 @@ ChapterDocument loadChapterDocument(
         imageBlocks
     );
 
-    result.valid =
-        true;
+    result.valid = true;
 
     return result;
 }
 
-TTF_Font* loadFont(
-    int size)
-{
+TTF_Font* loadFont(int size) {
     const char* paths[] =
     {
         "assets/fonts/NotoSans-Regular.ttf",
@@ -3412,16 +2751,14 @@ TTF_Font* loadFont(
     for (
         const char* path :
         paths
-    )
-    {
+    ) {
         if (
             TTF_Font* font =
                 TTF_OpenFont(
                     path,
                     size
                 )
-        )
-        {
+        ) {
             return font;
         }
     }
@@ -3431,21 +2768,17 @@ TTF_Font* loadFont(
 
 int textPixelWidth(
     TTF_Font* font,
-    const std::string& text)
-{
+    const std::string& text
+) {
     if (
         !font ||
         text.empty()
-    )
-    {
+    ) {
         return 0;
     }
 
-    int width =
-        0;
-
-    int height =
-        0;
+    int width = 0;
+    int height = 0;
 
     if (
         TTF_SizeUTF8(
@@ -3454,8 +2787,7 @@ int textPixelWidth(
             &width,
             &height
         ) != 0
-    )
-    {
+    ) {
         return 0;
     }
 
@@ -3465,16 +2797,14 @@ int textPixelWidth(
 std::string fitTextToWidth(
     TTF_Font* font,
     const std::string& text,
-    int maxWidth)
-{
+    int maxWidth
+) {
     if (
         textPixelWidth(
             font,
             text
-        ) <=
-        maxWidth
-    )
-    {
+        ) <= maxWidth
+    ) {
         return text;
     }
 
@@ -3484,10 +2814,7 @@ std::string fitTextToWidth(
     std::string result =
         text;
 
-    while (
-        !result.empty()
-    )
-    {
+    while (!result.empty()) {
         std::size_t start =
             result.size() - 1;
 
@@ -3499,23 +2826,18 @@ std::string fitTextToWidth(
                 ) &
                 0xC0
             ) == 0x80
-        )
-        {
+        ) {
             --start;
         }
 
-        result.erase(
-            start
-        );
+        result.erase(start);
 
         if (
             textPixelWidth(
                 font,
                 result + ellipsis
-            ) <=
-            maxWidth
-        )
-        {
+            ) <= maxWidth
+        ) {
             return
                 result
                 + ellipsis;
@@ -3531,20 +2853,16 @@ int measureTextWidth(
     std::unordered_map<
         std::string,
         int
-    >& widthCache)
-{
+    >& widthCache
+) {
     auto found =
-        widthCache.find(
-            text
-        );
+        widthCache.find(text);
 
     if (
         found !=
         widthCache.end()
-    )
-    {
-        return
-            found->second;
+    ) {
+        return found->second;
     }
 
     int width =
@@ -3556,11 +2874,8 @@ int measureTextWidth(
     if (
         widthCache.size() <
         4096
-    )
-    {
-        widthCache[
-            text
-        ] =
+    ) {
+        widthCache[text] =
             width;
     }
 
@@ -3575,38 +2890,31 @@ std::vector<std::string> wrapParagraphFast(
     std::unordered_map<
         std::string,
         int
-    >& widthCache)
-{
+    >& widthCache
+) {
     std::vector<std::string>
         lines;
 
     std::string currentLine;
-
-    int currentWidth =
-        0;
-
-    std::size_t start =
-        0;
+    int currentWidth = 0;
+    std::size_t start = 0;
 
     while (
         start <
         paragraph.size()
-    )
-    {
+    ) {
         while (
             start <
                 paragraph.size() &&
             paragraph[start] == ' '
-        )
-        {
+        ) {
             ++start;
         }
 
         if (
             start >=
             paragraph.size()
-        )
-        {
+        ) {
             break;
         }
 
@@ -3619,8 +2927,7 @@ std::vector<std::string> wrapParagraphFast(
         if (
             end ==
             std::string::npos
-        )
-        {
+        ) {
             end =
                 paragraph.size();
         }
@@ -3640,16 +2947,13 @@ std::vector<std::string> wrapParagraphFast(
 
         if (
             currentLine.empty()
-        )
-        {
+        ) {
             currentLine =
                 word;
 
             currentWidth =
                 wordWidth;
-        }
-        else
-        {
+        } else {
             int candidateWidth =
                 currentWidth
                 + spaceWidth
@@ -3658,16 +2962,12 @@ std::vector<std::string> wrapParagraphFast(
             if (
                 candidateWidth <=
                 maxWidth
-            )
-            {
+            ) {
                 currentLine += " ";
                 currentLine += word;
-
                 currentWidth =
                     candidateWidth;
-            }
-            else
-            {
+            } else {
                 lines.push_back(
                     currentLine
                 );
@@ -3686,8 +2986,7 @@ std::vector<std::string> wrapParagraphFast(
 
     if (
         !currentLine.empty()
-    )
-    {
+    ) {
         lines.push_back(
             currentLine
         );
@@ -3696,11 +2995,53 @@ std::vector<std::string> wrapParagraphFast(
     return lines;
 }
 
+TTF_Font* readerFontForStyle(
+    App& app,
+    TextStyle style
+) {
+    switch (style) {
+        case TextStyle::Italic:
+            return
+                app.fontReaderItalic
+                ? app.fontReaderItalic
+                : app.fontReader;
+
+        case TextStyle::Heading:
+            return
+                app.fontHeading
+                ? app.fontHeading
+                : app.fontReader;
+
+        case TextStyle::Regular:
+        default:
+            return
+                app.fontReader;
+    }
+}
+
+TTF_Font* smallFontForStyle(
+    App& app,
+    TextStyle style
+) {
+    if (
+        style ==
+            TextStyle::Italic &&
+        app.fontSmallItalic
+    ) {
+        return
+            app.fontSmallItalic;
+    }
+
+    return
+        app.fontSmall;
+}
+
 std::vector<TextLine> wrapTextBlock(
-    TTF_Font* font,
+    App& app,
     const ContentBlock& block,
-    int maxWidth)
-{
+    int maxWidth,
+    bool smallText = false
+) {
     std::vector<TextLine>
         output;
 
@@ -3709,15 +3050,21 @@ std::vector<TextLine> wrapTextBlock(
         int
     > widthCache;
 
-    widthCache.reserve(
-        256
-    );
+    widthCache.reserve(256);
 
-    int spaceWidth =
-        0;
+    TTF_Font* font =
+        smallText
+        ? smallFontForStyle(
+            app,
+            block.style
+        )
+        : readerFontForStyle(
+            app,
+            block.style
+        );
 
-    int unusedHeight =
-        0;
+    int spaceWidth = 0;
+    int unusedHeight = 0;
 
     TTF_SizeUTF8(
         font,
@@ -3742,22 +3089,20 @@ std::vector<TextLine> wrapTextBlock(
     for (
         std::string& line :
         lines
-    )
-    {
+    ) {
         TextLine textLine;
 
         textLine.text =
-            std::move(
-                line
-            );
+            std::move(line);
 
         textLine.centered =
             block.centered;
 
+        textLine.style =
+            block.style;
+
         output.push_back(
-            std::move(
-                textLine
-            )
+            std::move(textLine)
         );
     }
 
@@ -3766,12 +3111,11 @@ std::vector<TextLine> wrapTextBlock(
 
 void flushTextPage(
     std::vector<DocumentPage>& pages,
-    std::vector<TextLine>& currentLines)
-{
+    std::vector<TextLine>& currentLines
+) {
     if (
         currentLines.empty()
-    )
-    {
+    ) {
         return;
     }
 
@@ -3786,18 +3130,16 @@ void flushTextPage(
         );
 
     pages.push_back(
-        std::move(
-            page
-        )
+        std::move(page)
     );
 
     currentLines.clear();
 }
 
 std::vector<DocumentPage> layoutDocument(
-    TTF_Font* font,
-    const ChapterDocument& document)
-{
+    App& app,
+    const ChapterDocument& document
+) {
     std::vector<DocumentPage>
         pages;
 
@@ -3808,8 +3150,7 @@ std::vector<DocumentPage> layoutDocument(
         [&](
             const std::vector<TextLine>& lines,
             bool paragraphGap
-        )
-        {
+        ) {
             if (
                 paragraphGap &&
                 !currentLines.empty() &&
@@ -3817,12 +3158,12 @@ std::vector<DocumentPage> layoutDocument(
                     currentLines.size()
                 ) <
                 READER_VISIBLE_LINES
-            )
-            {
+            ) {
                 currentLines.push_back(
                     TextLine{
                         "",
-                        false
+                        false,
+                        TextStyle::Regular
                     }
                 );
             }
@@ -3830,15 +3171,13 @@ std::vector<DocumentPage> layoutDocument(
             for (
                 const TextLine& line :
                 lines
-            )
-            {
+            ) {
                 if (
                     static_cast<int>(
                         currentLines.size()
                     ) >=
                     READER_VISIBLE_LINES
-                )
-                {
+                ) {
                     flushTextPage(
                         pages,
                         currentLines
@@ -3855,19 +3194,17 @@ std::vector<DocumentPage> layoutDocument(
         std::size_t i = 0;
         i < document.blocks.size();
         ++i
-    )
-    {
+    ) {
         const ContentBlock& block =
             document.blocks[i];
 
         if (
             block.kind ==
             BlockKind::Text
-        )
-        {
+        ) {
             std::vector<TextLine> wrapped =
                 wrapTextBlock(
-                    font,
+                    app,
                     block,
                     TEXT_WIDTH
                 );
@@ -3903,8 +3240,7 @@ std::vector<DocumentPage> layoutDocument(
             std::size_t j = i + 1;
             j < document.blocks.size();
             ++j
-        )
-        {
+        ) {
             const ContentBlock& next =
                 document.blocks[j];
 
@@ -3912,35 +3248,34 @@ std::vector<DocumentPage> layoutDocument(
                 next.kind !=
                     BlockKind::Text ||
                 !next.centered
-            )
-            {
+            ) {
                 break;
             }
 
             std::vector<TextLine> wrapped =
                 wrapTextBlock(
-                    font,
+                    app,
                     next,
-                    TEXT_WIDTH - 24
+                    TEXT_WIDTH - 24,
+                    true
                 );
 
             if (
                 candidateCaption.size()
                     + wrapped.size() >
                 MAX_CAPTION_LINES
-            )
-            {
+            ) {
                 break;
             }
 
             if (
                 !candidateCaption.empty()
-            )
-            {
+            ) {
                 candidateCaption.push_back(
                     TextLine{
                         "",
-                        true
+                        true,
+                        TextStyle::Regular
                     }
                 );
             }
@@ -3949,14 +3284,12 @@ std::vector<DocumentPage> layoutDocument(
                 candidateCaption.size()
                     + wrapped.size() >
                 MAX_CAPTION_LINES
-            )
-            {
+            ) {
                 if (
                     !candidateCaption.empty() &&
                     candidateCaption.back()
                         .text.empty()
-                )
-                {
+                ) {
                     candidateCaption.pop_back();
                 }
 
@@ -3979,9 +3312,7 @@ std::vector<DocumentPage> layoutDocument(
             );
 
         pages.push_back(
-            std::move(
-                imagePage
-            )
+            std::move(imagePage)
         );
 
         i =
@@ -3997,12 +3328,11 @@ std::vector<DocumentPage> layoutDocument(
 }
 
 void destroyReaderImage(
-    App& app)
-{
+    App& app
+) {
     if (
         app.readerImageTexture
-    )
-    {
+    ) {
         SDL_DestroyTexture(
             app.readerImageTexture
         );
@@ -4011,11 +3341,8 @@ void destroyReaderImage(
             nullptr;
     }
 
-    app.readerImageWidth =
-        0;
-
-    app.readerImageHeight =
-        0;
+    app.readerImageWidth = 0;
+    app.readerImageHeight = 0;
 
     app.readerLoadedImagePath.clear();
     app.readerImageError.clear();
@@ -4030,19 +3357,13 @@ bool loadImageTextureFromEpub(
     SDL_Texture*& outputTexture,
     int& outputWidth,
     int& outputHeight,
-    std::string& error)
-{
-    outputTexture =
-        nullptr;
+    std::string& error
+) {
+    outputTexture = nullptr;
+    outputWidth = 0;
+    outputHeight = 0;
 
-    outputWidth =
-        0;
-
-    outputHeight =
-        0;
-
-    int zipError =
-        0;
+    int zipError = 0;
 
     zip_t* archive =
         zip_open(
@@ -4051,8 +3372,7 @@ bool loadImageTextureFromEpub(
             &zipError
         );
 
-    if (!archive)
-    {
+    if (!archive) {
         error =
             "Could not reopen EPUB";
 
@@ -4069,23 +3389,16 @@ bool loadImageTextureFromEpub(
             imageBytes,
             error
         )
-    )
-    {
-        zip_close(
-            archive
-        );
-
+    ) {
+        zip_close(archive);
         return false;
     }
 
-    zip_close(
-        archive
-    );
+    zip_close(archive);
 
     if (
         imageBytes.empty()
-    )
-    {
+    ) {
         error =
             "Image is empty";
 
@@ -4100,8 +3413,7 @@ bool loadImageTextureFromEpub(
             )
         );
 
-    if (!rw)
-    {
+    if (!rw) {
         error =
             SDL_GetError();
 
@@ -4114,8 +3426,7 @@ bool loadImageTextureFromEpub(
             1
         );
 
-    if (!source)
-    {
+    if (!source) {
         error =
             IMG_GetError();
 
@@ -4125,11 +3436,8 @@ bool loadImageTextureFromEpub(
     if (
         source->w <= 0 ||
         source->h <= 0
-    )
-    {
-        SDL_FreeSurface(
-            source
-        );
+    ) {
+        SDL_FreeSurface(source);
 
         error =
             "Invalid image dimensions";
@@ -4179,8 +3487,8 @@ bool loadImageTextureFromEpub(
         std::max(
             1,
             static_cast<int>(
-                source->w *
-                scale
+                source->w
+                * scale
             )
         );
 
@@ -4188,8 +3496,8 @@ bool loadImageTextureFromEpub(
         std::max(
             1,
             static_cast<int>(
-                source->h *
-                scale
+                source->h
+                * scale
             )
         );
 
@@ -4203,10 +3511,11 @@ bool loadImageTextureFromEpub(
         nullptr;
 
     if (
-        scaledWidth != source->w ||
-        scaledHeight != source->h
-    )
-    {
+        scaledWidth !=
+            source->w ||
+        scaledHeight !=
+            source->h
+    ) {
         converted =
             SDL_ConvertSurfaceFormat(
                 source,
@@ -4214,10 +3523,7 @@ bool loadImageTextureFromEpub(
                 0
             );
 
-        if (
-            converted
-        )
-        {
+        if (converted) {
             scaled =
                 SDL_CreateRGBSurfaceWithFormat(
                     0,
@@ -4235,17 +3541,11 @@ bool loadImageTextureFromEpub(
                     scaled,
                     nullptr
                 ) == 0
-            )
-            {
+            ) {
                 finalSurface =
                     scaled;
-            }
-            else
-            {
-                if (
-                    scaled
-                )
-                {
+            } else {
+                if (scaled) {
                     SDL_FreeSurface(
                         scaled
                     );
@@ -4259,9 +3559,7 @@ bool loadImageTextureFromEpub(
                     SDL_GetError()
                 );
             }
-        }
-        else
-        {
+        } else {
             debugLog(
                 "Image conversion failed, falling back to source texture: %s",
                 SDL_GetError()
@@ -4275,32 +3573,19 @@ bool loadImageTextureFromEpub(
             finalSurface
         );
 
-    if (!texture)
-    {
+    if (!texture) {
         error =
             SDL_GetError();
 
-        if (
-            scaled
-        )
-        {
-            SDL_FreeSurface(
-                scaled
-            );
+        if (scaled) {
+            SDL_FreeSurface(scaled);
         }
 
-        if (
-            converted
-        )
-        {
-            SDL_FreeSurface(
-                converted
-            );
+        if (converted) {
+            SDL_FreeSurface(converted);
         }
 
-        SDL_FreeSurface(
-            source
-        );
+        SDL_FreeSurface(source);
 
         return false;
     }
@@ -4314,27 +3599,15 @@ bool loadImageTextureFromEpub(
     outputHeight =
         finalSurface->h;
 
-    if (
-        scaled
-    )
-    {
-        SDL_FreeSurface(
-            scaled
-        );
+    if (scaled) {
+        SDL_FreeSurface(scaled);
     }
 
-    if (
-        converted
-    )
-    {
-        SDL_FreeSurface(
-            converted
-        );
+    if (converted) {
+        SDL_FreeSurface(converted);
     }
 
-    SDL_FreeSurface(
-        source
-    );
+    SDL_FreeSurface(source);
 
     debugLog(
         "IMG texture ready: %s = %dx%d",
@@ -4347,38 +3620,35 @@ bool loadImageTextureFromEpub(
 }
 
 int imageAreaHeightForPage(
-    const DocumentPage& page)
-{
+    const DocumentPage& page
+) {
     int captionHeight =
         static_cast<int>(
             page.captionLines.size()
-        ) * 16;
+        )
+        * 16;
 
     if (
         !page.captionLines.empty()
-    )
-    {
-        captionHeight +=
-            8;
+    ) {
+        captionHeight += 8;
     }
 
     return
         std::max(
             80,
             (
-                READER_BOTTOM -
-                43
-            ) -
-            captionHeight
+                READER_BOTTOM
+                - 43
+            )
+            - captionHeight
         );
 }
 
 void loadCurrentPageImage(
-    App& app)
-{
-    destroyReaderImage(
-        app
-    );
+    App& app
+) {
+    destroyReaderImage(app);
 
     if (
         app.readerPageIndex < 0 ||
@@ -4386,8 +3656,7 @@ void loadCurrentPageImage(
             static_cast<int>(
                 app.readerPages.size()
             )
-    )
-    {
+    ) {
         return;
     }
 
@@ -4399,8 +3668,7 @@ void loadCurrentPageImage(
     if (
         page.kind !=
         PageKind::Image
-    )
-    {
+    ) {
         return;
     }
 
@@ -4410,8 +3678,7 @@ void loadCurrentPageImage(
             static_cast<int>(
                 app.books.size()
             )
-    )
-    {
+    ) {
         app.readerImageError =
             "Invalid book";
 
@@ -4428,11 +3695,8 @@ void loadCurrentPageImage(
     SDL_Texture* texture =
         nullptr;
 
-    int width =
-        0;
-
-    int height =
-        0;
+    int width = 0;
+    int height = 0;
 
     if (
         !loadImageTextureFromEpub(
@@ -4448,8 +3712,7 @@ void loadCurrentPageImage(
             height,
             error
         )
-    )
-    {
+    ) {
         app.readerImageError =
             error;
 
@@ -4476,22 +3739,20 @@ void loadCurrentPageImage(
 }
 
 void loadProgress(
-    App& app)
-{
+    App& app
+) {
     FILE* file =
         std::fopen(
             PROGRESS_PATH,
             "r"
         );
 
-    if (!file)
+    if (!file) {
         return;
+    }
 
-    bool version2 =
-        false;
-
-    bool firstMeaningfulLine =
-        true;
+    bool version2 = false;
+    bool firstMeaningfulLine = true;
 
     char buffer[1024];
 
@@ -4501,8 +3762,7 @@ void loadProgress(
             sizeof(buffer),
             file
         )
-    )
-    {
+    ) {
         std::string line =
             buffer;
 
@@ -4512,15 +3772,13 @@ void loadProgress(
                 line.back() == '\n' ||
                 line.back() == '\r'
             )
-        )
-        {
+        ) {
             line.pop_back();
         }
 
         if (
             line.empty()
-        )
-        {
+        ) {
             continue;
         }
 
@@ -4528,8 +3786,7 @@ void loadProgress(
             firstMeaningfulLine &&
             line ==
             "#LARP_PROGRESS_V2"
-        )
-        {
+        ) {
             version2 =
                 true;
 
@@ -4545,22 +3802,19 @@ void loadProgress(
         if (
             !line.empty() &&
             line[0] == '#'
-        )
-        {
+        ) {
             continue;
         }
 
         std::vector<std::string>
             fields;
 
-        std::size_t start =
-            0;
+        std::size_t start = 0;
 
         while (
             start <=
             line.size()
-        )
-        {
+        ) {
             std::size_t tab =
                 line.find(
                     '\t',
@@ -4570,12 +3824,9 @@ void loadProgress(
             if (
                 tab ==
                 std::string::npos
-            )
-            {
+            ) {
                 fields.push_back(
-                    line.substr(
-                        start
-                    )
+                    line.substr(start)
                 );
 
                 break;
@@ -4593,10 +3844,8 @@ void loadProgress(
         }
 
         if (
-            fields.size() <
-            2
-        )
-        {
+            fields.size() < 2
+        ) {
             continue;
         }
 
@@ -4604,8 +3853,7 @@ void loadProgress(
 
         if (
             fields.size() == 2
-        )
-        {
+        ) {
             progress.spineIndex =
                 0;
 
@@ -4620,9 +3868,7 @@ void loadProgress(
             progress.pageIndex =
                 oldTopLine /
                 READER_VISIBLE_LINES;
-        }
-        else
-        {
+        } else {
             progress.spineIndex =
                 std::max(
                     0,
@@ -4648,26 +3894,24 @@ void loadProgress(
 
         app.savedProgress[
             fields[0]
-        ] =
-            progress;
+        ] = progress;
     }
 
-    std::fclose(
-        file
-    );
+    std::fclose(file);
 }
 
 void saveProgress(
-    const App& app)
-{
+    const App& app
+) {
     FILE* file =
         std::fopen(
             PROGRESS_PATH,
             "w"
         );
 
-    if (!file)
+    if (!file) {
         return;
+    }
 
     std::fprintf(
         file,
@@ -4677,8 +3921,7 @@ void saveProgress(
     for (
         const auto& entry :
         app.savedProgress
-    )
-    {
+    ) {
         std::fprintf(
             file,
             "%s\t%d\t%d\n",
@@ -4688,19 +3931,16 @@ void saveProgress(
         );
     }
 
-    std::fclose(
-        file
-    );
+    std::fclose(file);
 }
 
 void rememberCurrentProgress(
-    App& app)
-{
+    App& app
+) {
     if (
         app.readerBookFilename.empty() ||
         app.readerSpineIndex < 0
-    )
-    {
+    ) {
         return;
     }
 
@@ -4717,19 +3957,16 @@ void rememberCurrentProgress(
 
     app.savedProgress[
         app.readerBookFilename
-    ] =
-        progress;
+    ] = progress;
 
-    saveProgress(
-        app
-    );
+    saveProgress(app);
 }
 
 std::string makeTextCacheKey(
     TTF_Font* font,
     const std::string& text,
-    SDL_Color color)
-{
+    SDL_Color color
+) {
     return
         std::to_string(
             reinterpret_cast<
@@ -4737,21 +3974,13 @@ std::string makeTextCacheKey(
             >(font)
         )
         + "|"
-        + std::to_string(
-            color.r
-        )
+        + std::to_string(color.r)
         + "|"
-        + std::to_string(
-            color.g
-        )
+        + std::to_string(color.g)
         + "|"
-        + std::to_string(
-            color.b
-        )
+        + std::to_string(color.b)
         + "|"
-        + std::to_string(
-            color.a
-        )
+        + std::to_string(color.a)
         + "|"
         + text;
 }
@@ -4760,8 +3989,8 @@ CachedText* getCachedText(
     App& app,
     TTF_Font* font,
     const std::string& text,
-    SDL_Color color)
-{
+    SDL_Color color
+) {
     std::string key =
         makeTextCacheKey(
             font,
@@ -4770,15 +3999,12 @@ CachedText* getCachedText(
         );
 
     auto existing =
-        app.textCache.find(
-            key
-        );
+        app.textCache.find(key);
 
     if (
         existing !=
         app.textCache.end()
-    )
-    {
+    ) {
         return
             &existing->second;
     }
@@ -4790,8 +4016,9 @@ CachedText* getCachedText(
             color
         );
 
-    if (!surface)
+    if (!surface) {
         return nullptr;
+    }
 
     SDL_Texture* texture =
         SDL_CreateTextureFromSurface(
@@ -4799,12 +4026,8 @@ CachedText* getCachedText(
             surface
         );
 
-    if (!texture)
-    {
-        SDL_FreeSurface(
-            surface
-        );
-
+    if (!texture) {
+        SDL_FreeSurface(surface);
         return nullptr;
     }
 
@@ -4819,9 +4042,7 @@ CachedText* getCachedText(
     cached.height =
         surface->h;
 
-    SDL_FreeSurface(
-        surface
-    );
+    SDL_FreeSurface(surface);
 
     auto result =
         app.textCache.emplace(
@@ -4839,12 +4060,11 @@ void drawText(
     const std::string& text,
     int x,
     int y,
-    SDL_Color color)
-{
+    SDL_Color color
+) {
     if (
         text.empty()
-    )
-    {
+    ) {
         return;
     }
 
@@ -4856,8 +4076,9 @@ void drawText(
             color
         );
 
-    if (!cached)
+    if (!cached) {
         return;
+    }
 
     SDL_Rect destination
     {
@@ -4880,12 +4101,11 @@ void drawCenteredText(
     TTF_Font* font,
     const std::string& text,
     int y,
-    SDL_Color color)
-{
+    SDL_Color color
+) {
     if (
         text.empty()
-    )
-    {
+    ) {
         return;
     }
 
@@ -4902,8 +4122,8 @@ void drawCenteredText(
         std::max(
             TEXT_LEFT,
             (
-                SCREEN_WIDTH -
-                width
+                SCREEN_WIDTH
+                - width
             ) / 2
         ),
         y,
@@ -4912,17 +4132,15 @@ void drawCenteredText(
 }
 
 void clearTextCache(
-    App& app)
-{
+    App& app
+) {
     for (
         auto& entry :
         app.textCache
-    )
-    {
+    ) {
         if (
             entry.second.texture
-        )
-        {
+        ) {
             SDL_DestroyTexture(
                 entry.second.texture
             );
@@ -4934,29 +4152,22 @@ void clearTextCache(
 
 int activeTocIndexForSpine(
     const App& app,
-    int spineIndex)
-{
-    int active =
-        -1;
+    int spineIndex
+) {
+    int active = -1;
 
     for (
         std::size_t i = 0;
         i < app.readerToc.size();
         ++i
-    )
-    {
+    ) {
         if (
             app.readerToc[i].spineIndex <=
             spineIndex
-        )
-        {
+        ) {
             active =
-                static_cast<int>(
-                    i
-                );
-        }
-        else
-        {
+                static_cast<int>(i);
+        } else {
             break;
         }
     }
@@ -4965,35 +4176,26 @@ int activeTocIndexForSpine(
 }
 
 std::string currentSectionTitle(
-    const App& app)
-{
+    const App& app
+) {
     if (
         app.readerActiveTocIndex >= 0 &&
         app.readerActiveTocIndex <
             static_cast<int>(
                 app.readerToc.size()
             )
-    )
-    {
+    ) {
         const TocEntry& entry =
             app.readerToc[
                 app.readerActiveTocIndex
             ];
 
         std::string lowerTitle =
-            toLower(
-                entry.title
-            );
+            toLower(entry.title);
 
         bool coverLike =
-            lowerTitle.find(
-                "cover"
-            ) !=
-                std::string::npos ||
-            lowerTitle.find(
-                "cubierta"
-            ) !=
-                std::string::npos;
+            lowerTitle.find("cover") != std::string::npos ||
+            lowerTitle.find("cubierta") != std::string::npos;
 
         if (
             !(
@@ -5001,10 +4203,8 @@ std::string currentSectionTitle(
                 app.readerSpineIndex >
                     entry.spineIndex
             )
-        )
-        {
-            return
-                entry.title;
+        ) {
+            return entry.title;
         }
     }
 
@@ -5014,22 +4214,20 @@ std::string currentSectionTitle(
             static_cast<int>(
                 app.readerSpine.size()
             )
-    )
-    {
+    ) {
         return
             app.readerSpine[
                 app.readerSpineIndex
             ].title;
     }
 
-    return
-        app.readerTitle;
+    return app.readerTitle;
 }
 
 void loadingFailed(
     App& app,
-    const std::string& error)
-{
+    const std::string& error
+) {
     app.loadingStage =
         LoadingStage::Error;
 
@@ -5054,16 +4252,15 @@ void scheduleDocumentLoad(
     DocumentPosition position,
     int restorePage,
     int searchDirection,
-    Screen returnScreen)
-{
+    Screen returnScreen
+) {
     if (
         spineIndex < 0 ||
         spineIndex >=
             static_cast<int>(
                 app.readerSpine.size()
             )
-    )
-    {
+    ) {
         return;
     }
 
@@ -5104,21 +4301,18 @@ void scheduleDocumentLoad(
     app.screen =
         Screen::Loading;
 
-    clearTextCache(
-        app
-    );
+    clearTextCache(app);
 }
 
 void finishSearchWithoutResult(
-    App& app)
-{
+    App& app
+) {
     if (
         app.loadingReturnScreen ==
             Screen::Reader &&
         !app.readerPages.empty() &&
         app.readerSpineIndex >= 0
-    )
-    {
+    ) {
         app.pendingDocument =
             ChapterDocument{};
 
@@ -5134,9 +4328,7 @@ void finishSearchWithoutResult(
         app.screen =
             Screen::Reader;
 
-        clearTextCache(
-            app
-        );
+        clearTextCache(app);
 
         return;
     }
@@ -5149,8 +4341,8 @@ void finishSearchWithoutResult(
 
 void skipPendingSpineItem(
     App& app,
-    const std::string& reason)
-{
+    const std::string& reason
+) {
     debugLog(
         "Skipping spine item %d: %s",
         app.pendingSpineIndex + 1,
@@ -5167,12 +4359,8 @@ void skipPendingSpineItem(
             static_cast<int>(
                 app.readerSpine.size()
             )
-    )
-    {
-        finishSearchWithoutResult(
-            app
-        );
-
+    ) {
+        finishSearchWithoutResult(app);
         return;
     }
 
@@ -5189,8 +4377,8 @@ void skipPendingSpineItem(
 }
 
 void beginOpenSelectedBook(
-    App& app)
-{
+    App& app
+) {
     if (
         app.books.empty() ||
         app.selected < 0 ||
@@ -5198,8 +4386,7 @@ void beginOpenSelectedBook(
             static_cast<int>(
                 app.books.size()
             )
-    )
-    {
+    ) {
         return;
     }
 
@@ -5208,20 +4395,12 @@ void beginOpenSelectedBook(
             app.selected
         ];
 
-    if (
-        !book.valid
-    )
-    {
+    if (!book.valid) {
         return;
     }
 
-    destroyReaderImage(
-        app
-    );
-
-    clearTextCache(
-        app
-    );
+    destroyReaderImage(app);
+    clearTextCache(app);
 
     app.currentBookIndex =
         app.selected;
@@ -5266,12 +4445,11 @@ void beginOpenSelectedBook(
 
 void finishDocument(
     App& app,
-    std::vector<DocumentPage>&& pages)
-{
+    std::vector<DocumentPage>&& pages
+) {
     if (
         pages.empty()
-    )
-    {
+    ) {
         skipPendingSpineItem(
             app,
             "Document produced no pages"
@@ -5281,9 +4459,7 @@ void finishDocument(
     }
 
     app.readerPages =
-        std::move(
-            pages
-        );
+        std::move(pages);
 
     app.readerSpineIndex =
         app.pendingSpineIndex;
@@ -5296,40 +4472,31 @@ void finishDocument(
 
     switch (
         app.pendingPosition
-    )
-    {
+    ) {
         case DocumentPosition::Start:
-        {
             app.readerPageIndex =
                 0;
-
             break;
-        }
 
         case DocumentPosition::End:
-        {
             app.readerPageIndex =
                 static_cast<int>(
                     app.readerPages.size()
                 )
                 - 1;
-
             break;
-        }
 
         case DocumentPosition::Restore:
-        {
             app.readerPageIndex =
                 std::clamp(
                     app.pendingRestorePage,
                     0,
                     static_cast<int>(
                         app.readerPages.size()
-                    ) - 1
+                    )
+                    - 1
                 );
-
             break;
-        }
     }
 
     app.tocSelected =
@@ -5352,13 +4519,9 @@ void finishDocument(
     app.screen =
         Screen::Reader;
 
-    clearTextCache(
-        app
-    );
+    clearTextCache(app);
 
-    loadCurrentPageImage(
-        app
-    );
+    loadCurrentPageImage(app);
 
     debugLog(
         "DISPLAY: spine=%d/%zu page=%d/%zu title=%s",
@@ -5373,41 +4536,35 @@ void finishDocument(
 }
 
 void processLoadingStage(
-    App& app)
-{
+    App& app
+) {
     if (
         app.screen !=
             Screen::Loading ||
         app.loadingStage ==
             LoadingStage::Error
-    )
-    {
+    ) {
         return;
     }
 
     if (
-        app.loadingWarmupFrames <
-        2
-    )
-    {
+        app.loadingWarmupFrames < 2
+    ) {
         ++app.loadingWarmupFrames;
-
         return;
     }
 
     if (
         app.loadingStage ==
         LoadingStage::OpenStructure
-    )
-    {
+    ) {
         if (
             app.currentBookIndex < 0 ||
             app.currentBookIndex >=
                 static_cast<int>(
                     app.books.size()
                 )
-        )
-        {
+        ) {
             loadingFailed(
                 app,
                 "Invalid book index"
@@ -5422,14 +4579,9 @@ void processLoadingStage(
             ];
 
         ReaderStructure structure =
-            loadReaderStructure(
-                book
-            );
+            loadReaderStructure(book);
 
-        if (
-            !structure.valid
-        )
-        {
+        if (!structure.valid) {
             loadingFailed(
                 app,
                 structure.error
@@ -5464,8 +4616,7 @@ void processLoadingStage(
         if (
             saved !=
             app.savedProgress.end()
-        )
-        {
+        ) {
             progress =
                 saved->second;
         }
@@ -5476,7 +4627,8 @@ void processLoadingStage(
                 0,
                 static_cast<int>(
                     app.readerSpine.size()
-                ) - 1
+                )
+                - 1
             );
 
         scheduleDocumentLoad(
@@ -5494,16 +4646,14 @@ void processLoadingStage(
     if (
         app.loadingStage ==
         LoadingStage::LoadDocument
-    )
-    {
+    ) {
         if (
             app.currentBookIndex < 0 ||
             app.currentBookIndex >=
                 static_cast<int>(
                     app.books.size()
                 )
-        )
-        {
+        ) {
             loadingFailed(
                 app,
                 "Invalid book index"
@@ -5518,8 +4668,7 @@ void processLoadingStage(
                 static_cast<int>(
                     app.readerSpine.size()
                 )
-        )
-        {
+        ) {
             loadingFailed(
                 app,
                 "Invalid spine index"
@@ -5541,14 +4690,10 @@ void processLoadingStage(
                 ].path
             );
 
-        if (
-            !document.valid
-        )
-        {
+        if (!document.valid) {
             if (
                 document.skippable
-            )
-            {
+            ) {
                 skipPendingSpineItem(
                     app,
                     document.error
@@ -5566,9 +4711,7 @@ void processLoadingStage(
         }
 
         app.pendingDocument =
-            std::move(
-                document
-            );
+            std::move(document);
 
         app.loadingStage =
             LoadingStage::LayoutDocument;
@@ -5590,43 +4733,33 @@ void processLoadingStage(
     if (
         app.loadingStage ==
         LoadingStage::LayoutDocument
-    )
-    {
+    ) {
         std::vector<DocumentPage> pages =
             layoutDocument(
-                app.fontReader,
+                app,
                 app.pendingDocument
             );
 
         debugLog(
             "LAYOUT: %s -> %zu pages",
-            app.pendingDocument.path.c_str(),
+            app.pendingDocument
+                .path.c_str(),
             pages.size()
         );
 
         finishDocument(
             app,
-            std::move(
-                pages
-            )
+            std::move(pages)
         );
     }
 }
 
 void closeReader(
-    App& app)
-{
-    rememberCurrentProgress(
-        app
-    );
-
-    destroyReaderImage(
-        app
-    );
-
-    clearTextCache(
-        app
-    );
+    App& app
+) {
+    rememberCurrentProgress(app);
+    destroyReaderImage(app);
+    clearTextCache(app);
 
     app.screen =
         Screen::Library;
@@ -5662,8 +4795,8 @@ void closeReader(
 
 void navigateToAdjacentDocument(
     App& app,
-    int direction)
-{
+    int direction
+) {
     int target =
         app.readerSpineIndex
         + direction;
@@ -5674,14 +4807,11 @@ void navigateToAdjacentDocument(
             static_cast<int>(
                 app.readerSpine.size()
             )
-    )
-    {
+    ) {
         return;
     }
 
-    rememberCurrentProgress(
-        app
-    );
+    rememberCurrentProgress(app);
 
     scheduleDocumentLoad(
         app,
@@ -5697,39 +4827,33 @@ void navigateToAdjacentDocument(
 
 void setReaderPage(
     App& app,
-    int newPage)
-{
+    int newPage
+) {
     if (
         newPage < 0 ||
         newPage >=
             static_cast<int>(
                 app.readerPages.size()
             )
-    )
-    {
+    ) {
         return;
     }
 
     app.readerPageIndex =
         newPage;
 
-    clearTextCache(
-        app
-    );
+    clearTextCache(app);
 
-    loadCurrentPageImage(
-        app
-    );
+    loadCurrentPageImage(app);
 }
 
 void moveReaderByPage(
     App& app,
-    int direction)
-{
+    int direction
+) {
     if (
         app.readerPages.empty()
-    )
-    {
+    ) {
         return;
     }
 
@@ -5743,16 +4867,13 @@ void moveReaderByPage(
             static_cast<int>(
                 app.readerPages.size()
             )
-    )
-    {
+    ) {
         setReaderPage(
             app,
             target
         );
 
-        rememberCurrentProgress(
-            app
-        );
+        rememberCurrentProgress(app);
 
         return;
     }
@@ -5764,12 +4885,11 @@ void moveReaderByPage(
 }
 
 void openToc(
-    App& app)
-{
+    App& app
+) {
     if (
         app.readerToc.empty()
-    )
-    {
+    ) {
         return;
     }
 
@@ -5787,33 +4907,28 @@ void openToc(
     app.screen =
         Screen::Toc;
 
-    clearTextCache(
-        app
-    );
+    clearTextCache(app);
 }
 
 void closeToc(
-    App& app)
-{
+    App& app
+) {
     app.screen =
         Screen::Reader;
 
-    clearTextCache(
-        app
-    );
+    clearTextCache(app);
 }
 
 void jumpToTocSelection(
-    App& app)
-{
+    App& app
+) {
     if (
         app.tocSelected < 0 ||
         app.tocSelected >=
             static_cast<int>(
                 app.readerToc.size()
             )
-    )
-    {
+    ) {
         return;
     }
 
@@ -5824,14 +4939,11 @@ void jumpToTocSelection(
 
     if (
         target.spineIndex < 0
-    )
-    {
+    ) {
         return;
     }
 
-    rememberCurrentProgress(
-        app
-    );
+    rememberCurrentProgress(app);
 
     int direction =
         target.spineIndex <
@@ -5841,8 +4953,7 @@ void jumpToTocSelection(
 
     if (
         !target.fragment.empty()
-    )
-    {
+    ) {
         debugLog(
             "TOC fragment preserved but not positioned yet: %s#%s",
             target.path.c_str(),
@@ -5861,8 +4972,8 @@ void jumpToTocSelection(
 }
 
 void cancelLoading(
-    App& app)
-{
+    App& app
+) {
     app.loadingStage =
         LoadingStage::None;
 
@@ -5879,32 +4990,26 @@ void cancelLoading(
         app.loadingReturnScreen ==
             Screen::Reader &&
         !app.readerPages.empty()
-    )
-    {
+    ) {
         app.screen =
             Screen::Reader;
-    }
-    else
-    {
+    } else {
         app.screen =
             Screen::Library;
     }
 
-    clearTextCache(
-        app
-    );
+    clearTextCache(app);
 }
 
 bool initialize(
-    App& app)
-{
+    App& app
+) {
     if (
         SDL_Init(
             SDL_INIT_VIDEO |
             SDL_INIT_GAMECONTROLLER
         ) != 0
-    )
-    {
+    ) {
         return false;
     }
 
@@ -5931,8 +5036,7 @@ bool initialize(
 
     if (
         TTF_Init() != 0
-    )
-    {
+    ) {
         debugLog(
             "TTF_Init failed: %s",
             TTF_GetError()
@@ -5951,8 +5055,9 @@ bool initialize(
             0
         );
 
-    if (!app.window)
+    if (!app.window) {
         return false;
+    }
 
     app.renderer =
         SDL_CreateRenderer(
@@ -5961,8 +5066,9 @@ bool initialize(
             SDL_RENDERER_ACCELERATED
         );
 
-    if (!app.renderer)
+    if (!app.renderer) {
         return false;
+    }
 
     SDL_RenderSetLogicalSize(
         app.renderer,
@@ -5971,26 +5077,58 @@ bool initialize(
     );
 
     app.fontNormal =
-        loadFont(
-            17
-        );
+        loadFont(17);
 
     app.fontSmall =
-        loadFont(
-            12
-        );
+        loadFont(12);
+
+    app.fontSmallItalic =
+        loadFont(12);
 
     app.fontReader =
-        loadFont(
-            14
+        loadFont(14);
+
+    app.fontReaderItalic =
+        loadFont(14);
+
+    app.fontHeading =
+        loadFont(16);
+
+    if (
+        app.fontSmallItalic
+    ) {
+        TTF_SetFontStyle(
+            app.fontSmallItalic,
+            TTF_STYLE_ITALIC
         );
+    }
+
+    if (
+        app.fontReaderItalic
+    ) {
+        TTF_SetFontStyle(
+            app.fontReaderItalic,
+            TTF_STYLE_ITALIC
+        );
+    }
+
+    if (
+        app.fontHeading
+    ) {
+        TTF_SetFontStyle(
+            app.fontHeading,
+            TTF_STYLE_BOLD
+        );
+    }
 
     if (
         !app.fontNormal ||
         !app.fontSmall ||
-        !app.fontReader
-    )
-    {
+        !app.fontSmallItalic ||
+        !app.fontReader ||
+        !app.fontReaderItalic ||
+        !app.fontHeading
+    ) {
         debugLog(
             "Font load failed: %s",
             TTF_GetError()
@@ -6003,33 +5141,24 @@ bool initialize(
         int i = 0;
         i < SDL_NumJoysticks();
         ++i
-    )
-    {
+    ) {
         if (
-            !SDL_IsGameController(
-                i
-            )
-        )
-        {
+            !SDL_IsGameController(i)
+        ) {
             continue;
         }
 
         app.controller =
-            SDL_GameControllerOpen(
-                i
-            );
+            SDL_GameControllerOpen(i);
 
         if (
             app.controller
-        )
-        {
+        ) {
             break;
         }
     }
 
-    loadProgress(
-        app
-    );
+    loadProgress(app);
 
     app.books =
         scanBooks();
@@ -6044,24 +5173,18 @@ bool initialize(
 
 void handleLibraryButton(
     App& app,
-    Uint8 button)
-{
-    switch (
-        button
-    )
-    {
+    Uint8 button
+) {
+    switch (button) {
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
-        {
             if (
                 !app.books.empty()
-            )
-            {
+            ) {
                 --app.selected;
 
                 if (
                     app.selected < 0
-                )
-                {
+                ) {
                     app.selected =
                         static_cast<int>(
                             app.books.size()
@@ -6069,16 +5192,12 @@ void handleLibraryButton(
                         - 1;
                 }
             }
-
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-        {
             if (
                 !app.books.empty()
-            )
-            {
+            ) {
                 ++app.selected;
 
                 if (
@@ -6086,32 +5205,19 @@ void handleLibraryButton(
                     static_cast<int>(
                         app.books.size()
                     )
-                )
-                {
-                    app.selected =
-                        0;
+                ) {
+                    app.selected = 0;
                 }
             }
-
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_A:
-        {
-            beginOpenSelectedBook(
-                app
-            );
-
+            beginOpenSelectedBook(app);
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_START:
-        {
-            app.running =
-                false;
-
+            app.running = false;
             break;
-        }
 
         default:
             break;
@@ -6120,108 +5226,67 @@ void handleLibraryButton(
 
 void handleLoadingButton(
     App& app,
-    Uint8 button)
-{
+    Uint8 button
+) {
     if (
         button ==
         SDL_CONTROLLER_BUTTON_B
-    )
-    {
-        cancelLoading(
-            app
-        );
-    }
-    else if (
+    ) {
+        cancelLoading(app);
+    } else if (
         button ==
         SDL_CONTROLLER_BUTTON_START
-    )
-    {
-        rememberCurrentProgress(
-            app
-        );
-
-        app.running =
-            false;
+    ) {
+        rememberCurrentProgress(app);
+        app.running = false;
     }
 }
 
 void handleReaderButton(
     App& app,
-    Uint8 button)
-{
-    switch (
-        button
-    )
-    {
+    Uint8 button
+) {
+    switch (button) {
         case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
-        {
             moveReaderByPage(
                 app,
                 -1
             );
-
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
-        {
             moveReaderByPage(
                 app,
                 1
             );
-
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
-        {
             moveReaderByPage(
                 app,
                 -1
             );
-
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-        {
             moveReaderByPage(
                 app,
                 1
             );
-
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_Y:
-        {
-            openToc(
-                app
-            );
-
+            openToc(app);
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_B:
-        {
-            closeReader(
-                app
-            );
-
+            closeReader(app);
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_START:
-        {
-            rememberCurrentProgress(
-                app
-            );
-
-            app.running =
-                false;
-
+            rememberCurrentProgress(app);
+            app.running = false;
             break;
-        }
 
         default:
             break;
@@ -6230,24 +5295,18 @@ void handleReaderButton(
 
 void handleTocButton(
     App& app,
-    Uint8 button)
-{
-    switch (
-        button
-    )
-    {
+    Uint8 button
+) {
+    switch (button) {
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
-        {
             if (
                 !app.readerToc.empty()
-            )
-            {
+            ) {
                 --app.tocSelected;
 
                 if (
                     app.tocSelected < 0
-                )
-                {
+                ) {
                     app.tocSelected =
                         static_cast<int>(
                             app.readerToc.size()
@@ -6255,16 +5314,12 @@ void handleTocButton(
                         - 1;
                 }
             }
-
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-        {
             if (
                 !app.readerToc.empty()
-            )
-            {
+            ) {
                 ++app.tocSelected;
 
                 if (
@@ -6272,46 +5327,25 @@ void handleTocButton(
                     static_cast<int>(
                         app.readerToc.size()
                     )
-                )
-                {
-                    app.tocSelected =
-                        0;
+                ) {
+                    app.tocSelected = 0;
                 }
             }
-
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_A:
-        {
-            jumpToTocSelection(
-                app
-            );
-
+            jumpToTocSelection(app);
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_B:
         case SDL_CONTROLLER_BUTTON_Y:
-        {
-            closeToc(
-                app
-            );
-
+            closeToc(app);
             break;
-        }
 
         case SDL_CONTROLLER_BUTTON_START:
-        {
-            rememberCurrentProgress(
-                app
-            );
-
-            app.running =
-                false;
-
+            rememberCurrentProgress(app);
+            app.running = false;
             break;
-        }
 
         default:
             break;
@@ -6319,40 +5353,31 @@ void handleTocButton(
 }
 
 void handleInput(
-    App& app)
-{
+    App& app
+) {
     SDL_Event event;
 
     while (
         SDL_PollEvent(
             &event
         )
-    )
-    {
+    ) {
         if (
             event.type ==
             SDL_QUIT
-        )
-        {
-            rememberCurrentProgress(
-                app
-            );
-
-            app.running =
-                false;
-
+        ) {
+            rememberCurrentProgress(app);
+            app.running = false;
             continue;
         }
 
         if (
             event.type ==
             SDL_CONTROLLERDEVICEADDED
-        )
-        {
+        ) {
             if (
                 !app.controller
-            )
-            {
+            ) {
                 app.controller =
                     SDL_GameControllerOpen(
                         event.cdevice.which
@@ -6365,61 +5390,47 @@ void handleInput(
         if (
             event.type !=
             SDL_CONTROLLERBUTTONDOWN
-        )
-        {
+        ) {
             continue;
         }
 
         switch (
             app.screen
-        )
-        {
+        ) {
             case Screen::Library:
-            {
                 handleLibraryButton(
                     app,
                     event.cbutton.button
                 );
-
                 break;
-            }
 
             case Screen::Loading:
-            {
                 handleLoadingButton(
                     app,
                     event.cbutton.button
                 );
-
                 break;
-            }
 
             case Screen::Reader:
-            {
                 handleReaderButton(
                     app,
                     event.cbutton.button
                 );
-
                 break;
-            }
 
             case Screen::Toc:
-            {
                 handleTocButton(
                     app,
                     event.cbutton.button
                 );
-
                 break;
-            }
         }
     }
 }
 
 void renderLibrary(
-    App& app)
-{
+    App& app
+) {
     const SDL_Color background
     {
         18,
@@ -6521,8 +5532,7 @@ void renderLibrary(
 
     if (
         app.books.empty()
-    )
-    {
+    ) {
         drawText(
             app,
             app.fontNormal,
@@ -6540,9 +5550,7 @@ void renderLibrary(
             137,
             muted
         );
-    }
-    else
-    {
+    } else {
         constexpr int firstY =
             57;
 
@@ -6564,8 +5572,7 @@ void renderLibrary(
             int row = 0;
             row < visibleBooks;
             ++row
-        )
-        {
+        ) {
             int index =
                 firstBook
                 + row;
@@ -6575,8 +5582,7 @@ void renderLibrary(
                 static_cast<int>(
                     app.books.size()
                 )
-            )
-            {
+            ) {
                 break;
             }
 
@@ -6586,9 +5592,7 @@ void renderLibrary(
                 * rowHeight;
 
             const Book& book =
-                app.books[
-                    index
-                ];
+                app.books[index];
 
             bool isSelected =
                 index ==
@@ -6596,8 +5600,7 @@ void renderLibrary(
 
             if (
                 isSelected
-            )
-            {
+            ) {
                 SDL_Rect selection
                 {
                     12,
@@ -6690,8 +5693,8 @@ void renderLibrary(
 }
 
 void renderLoading(
-    App& app)
-{
+    App& app
+) {
     const SDL_Color background
     {
         18,
@@ -6784,8 +5787,7 @@ void renderLoading(
             static_cast<int>(
                 app.books.size()
             )
-    )
-    {
+    ) {
         bookTitle =
             app.books[
                 app.currentBookIndex
@@ -6852,8 +5854,8 @@ void renderLoading(
 }
 
 void renderReader(
-    App& app)
-{
+    App& app
+) {
     const SDL_Color background
     {
         244,
@@ -6935,8 +5937,7 @@ void renderReader(
             static_cast<int>(
                 app.readerToc.size()
             )
-    )
-    {
+    ) {
         logicalIndicator =
             std::to_string(
                 app.readerActiveTocIndex + 1
@@ -6945,9 +5946,7 @@ void renderReader(
             + std::to_string(
                 app.readerToc.size()
             );
-    }
-    else
-    {
+    } else {
         logicalIndicator =
             std::to_string(
                 app.readerSpineIndex + 1
@@ -6980,9 +5979,7 @@ void renderReader(
         app.fontSmall,
         fitTextToWidth(
             app.fontSmall,
-            currentSectionTitle(
-                app
-            ),
+            currentSectionTitle(app),
             titleMaxWidth
         ),
         16,
@@ -7005,8 +6002,7 @@ void renderReader(
             static_cast<int>(
                 app.readerPages.size()
             )
-    )
-    {
+    ) {
         const DocumentPage& page =
             app.readerPages[
                 app.readerPageIndex
@@ -7015,37 +6011,37 @@ void renderReader(
         if (
             page.kind ==
             PageKind::Text
-        )
-        {
+        ) {
             int y =
                 READER_TOP;
 
             for (
                 const TextLine& line :
                 page.lines
-            )
-            {
+            ) {
                 if (
                     !line.text.empty()
-                )
-                {
+                ) {
+                    TTF_Font* lineFont =
+                        readerFontForStyle(
+                            app,
+                            line.style
+                        );
+
                     if (
                         line.centered
-                    )
-                    {
+                    ) {
                         drawCenteredText(
                             app,
-                            app.fontReader,
+                            lineFont,
                             line.text,
                             y,
                             text
                         );
-                    }
-                    else
-                    {
+                    } else {
                         drawText(
                             app,
-                            app.fontReader,
+                            lineFont,
                             line.text,
                             TEXT_LEFT,
                             y,
@@ -7057,9 +6053,7 @@ void renderReader(
                 y +=
                     READER_LINE_HEIGHT;
             }
-        }
-        else
-        {
+        } else {
             int imageAreaHeight =
                 imageAreaHeightForPage(
                     page
@@ -7070,8 +6064,7 @@ void renderReader(
 
             if (
                 app.readerImageTexture
-            )
-            {
+            ) {
                 SDL_Rect destination
                 {
                     TEXT_LEFT
@@ -7096,9 +6089,7 @@ void renderReader(
                     nullptr,
                     &destination
                 );
-            }
-            else
-            {
+            } else {
                 drawCenteredText(
                     app,
                     app.fontSmall,
@@ -7119,23 +6110,23 @@ void renderReader(
             for (
                 const TextLine& line :
                 page.captionLines
-            )
-            {
+            ) {
                 if (
                     !line.text.empty()
-                )
-                {
+                ) {
                     drawCenteredText(
                         app,
-                        app.fontSmall,
+                        smallFontForStyle(
+                            app,
+                            line.style
+                        ),
                         line.text,
                         captionY,
                         text
                     );
                 }
 
-                captionY +=
-                    16;
+                captionY += 16;
             }
         }
     }
@@ -7185,8 +6176,8 @@ void renderReader(
 }
 
 void renderToc(
-    App& app)
-{
+    App& app
+) {
     const SDL_Color background
     {
         18,
@@ -7292,8 +6283,7 @@ void renderToc(
 
     if (
         app.readerToc.empty()
-    )
-    {
+    ) {
         drawText(
             app,
             app.fontNormal,
@@ -7302,9 +6292,7 @@ void renderToc(
             120,
             text
         );
-    }
-    else
-    {
+    } else {
         int firstItem =
             app.tocSelected >=
                 TOC_VISIBLE_ITEMS
@@ -7333,8 +6321,7 @@ void renderToc(
             int row = 0;
             row < TOC_VISIBLE_ITEMS;
             ++row
-        )
-        {
+        ) {
             int index =
                 firstItem
                 + row;
@@ -7344,8 +6331,7 @@ void renderToc(
                 static_cast<int>(
                     app.readerToc.size()
                 )
-            )
-            {
+            ) {
                 break;
             }
 
@@ -7364,8 +6350,7 @@ void renderToc(
 
             if (
                 isSelected
-            )
-            {
+            ) {
                 SDL_Rect selectionRect
                 {
                     12,
@@ -7415,8 +6400,7 @@ void renderToc(
 
             if (
                 isCurrent
-            )
-            {
+            ) {
                 title =
                     "* "
                     + title;
@@ -7466,87 +6450,79 @@ void renderToc(
 }
 
 void render(
-    App& app)
-{
+    App& app
+) {
     switch (
         app.screen
-    )
-    {
+    ) {
         case Screen::Library:
-        {
-            renderLibrary(
-                app
-            );
-
+            renderLibrary(app);
             break;
-        }
 
         case Screen::Loading:
-        {
-            renderLoading(
-                app
-            );
-
+            renderLoading(app);
             break;
-        }
 
         case Screen::Reader:
-        {
-            renderReader(
-                app
-            );
-
+            renderReader(app);
             break;
-        }
 
         case Screen::Toc:
-        {
-            renderToc(
-                app
-            );
-
+            renderToc(app);
             break;
-        }
     }
 }
 
 void shutdown(
-    App& app)
-{
-    rememberCurrentProgress(
-        app
-    );
-
-    destroyReaderImage(
-        app
-    );
-
-    clearTextCache(
-        app
-    );
+    App& app
+) {
+    rememberCurrentProgress(app);
+    destroyReaderImage(app);
+    clearTextCache(app);
 
     if (
         app.controller
-    )
-    {
+    ) {
         SDL_GameControllerClose(
             app.controller
         );
     }
 
     if (
+        app.fontHeading
+    ) {
+        TTF_CloseFont(
+            app.fontHeading
+        );
+    }
+
+    if (
+        app.fontReaderItalic
+    ) {
+        TTF_CloseFont(
+            app.fontReaderItalic
+        );
+    }
+
+    if (
         app.fontReader
-    )
-    {
+    ) {
         TTF_CloseFont(
             app.fontReader
         );
     }
 
     if (
+        app.fontSmallItalic
+    ) {
+        TTF_CloseFont(
+            app.fontSmallItalic
+        );
+    }
+
+    if (
         app.fontSmall
-    )
-    {
+    ) {
         TTF_CloseFont(
             app.fontSmall
         );
@@ -7554,8 +6530,7 @@ void shutdown(
 
     if (
         app.fontNormal
-    )
-    {
+    ) {
         TTF_CloseFont(
             app.fontNormal
         );
@@ -7563,8 +6538,7 @@ void shutdown(
 
     if (
         app.renderer
-    )
-    {
+    ) {
         SDL_DestroyRenderer(
             app.renderer
         );
@@ -7572,8 +6546,7 @@ void shutdown(
 
     if (
         app.window
-    )
-    {
+    ) {
         SDL_DestroyWindow(
             app.window
         );
@@ -7584,60 +6557,42 @@ void shutdown(
     SDL_Quit();
 }
 
-} // namespace
+}
 
 int main(
     int argc,
-    char* argv[])
-{
+    char* argv[]
+) {
     (void)argc;
     (void)argv;
 
     App app;
 
     if (
-        !initialize(
-            app
-        )
-    )
-    {
-        shutdown(
-            app
-        );
-
+        !initialize(app)
+    ) {
+        shutdown(app);
         return 1;
     }
 
     while (
         app.running
-    )
-    {
-        handleInput(
-            app
-        );
+    ) {
+        handleInput(app);
 
-        render(
-            app
-        );
+        render(app);
 
         if (
             app.screen ==
             Screen::Loading
-        )
-        {
-            processLoadingStage(
-                app
-            );
+        ) {
+            processLoadingStage(app);
         }
 
-        SDL_Delay(
-            16
-        );
+        SDL_Delay(16);
     }
 
-    shutdown(
-        app
-    );
+    shutdown(app);
 
     return 0;
 }
