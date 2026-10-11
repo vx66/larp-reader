@@ -6,146 +6,231 @@
 
 **Created by Xergno · DEAD SMILE**
 
-![Version](https://img.shields.io/badge/version-0.0.19-6f5a87?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.0.22-111111?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Sony%20PSP-2f3437?style=flat-square)
 ![Language](https://img.shields.io/badge/C%2B%2B-17-4d6d8a?style=flat-square)
 ![SDL2](https://img.shields.io/badge/SDL-2-596b58?style=flat-square)
 ![Format](https://img.shields.io/badge/format-EPUB-8b6f47?style=flat-square)
 
-**Lee EPUBs en una PSP con una interfaz simple, rápida y pensada para una pantalla de 480×272.**
+**Read EPUB books directly on a PSP with a fast, simple interface designed for a 480×272 screen.**
 
 </div>
 
 ---
 
-## ✦ Acerca de Larp Reader
+## About Larp Reader
 
-**Larp Reader** es un lector EPUB nativo escrito en **C++17 + SDL2** para Sony PSP.
+**Larp Reader** is a native EPUB reader written in **C++17 + SDL2** for the Sony PSP.
 
-El proyecto nació con una idea sencilla: poder leer libros EPUB directamente en una PSP sin convertir previamente el libro a imágenes, PDF o texto plano.
+The project started from a simple idea: copy a regular EPUB file to a PSP Memory Stick and read it directly on the console without converting it to images, PDF, or plain text first.
 
-El lector procesa la estructura interna del EPUB, pagina el contenido para la pantalla de la consola y mantiene una posición de lectura **semántica**, de modo que cambiar la orientación o el tamaño de fuente no debería hacerte perder el punto donde estabas leyendo.
+Larp Reader parses the internal structure of an EPUB, builds its own reading layout, renders text and illustrations, and keeps a semantic reading position so changing orientation or font size does not make you lose your place.
 
-> **Versión actual:** `v0.0.19`
+> **Current version:** `v0.0.22`
+
+The reader has been tested on real PSP hardware as well as PPSSPP.
 
 ---
 
-## ✨ Características
+## Features
 
-- Lectura de archivos **EPUB** directamente desde la Memory Stick.
-- Biblioteca automática desde `ms0:/BOOKS/`.
-- Lectura del **spine** del EPUB.
-- Tabla de contenidos.
-- Navegación mediante anchors internos.
-- Texto UTF-8 mediante **Noto Sans**.
-- Renderizado de imágenes **JPEG y PNG**.
-- Texto e imágenes mezclados dentro de un mismo libro.
-- Soporte básico de estilos:
-  - texto normal;
-  - cursiva;
-  - encabezados;
-  - texto centrado;
-  - captions de imágenes.
-- Modo **landscape** y **portrait**.
-- Reflow real del texto al cambiar orientación.
-- Tamaños de fuente configurables:
+- Native **EPUB** reading from the PSP Memory Stick.
+- Automatic library scanning from `ms0:/BOOKS/`.
+- EPUB metadata parsing.
+- EPUB manifest and spine support.
+- Table of contents support.
+- Internal anchor navigation.
+- UTF-8 text rendering with **Noto Sans**.
+- JPEG and PNG image rendering.
+- Mixed text and images inside the same book.
+- Basic typography support:
+  - regular text;
+  - italic text;
+  - headings;
+  - centered text;
+  - image captions.
+- Landscape and portrait reading modes.
+- Real text reflow when changing orientation.
+- Configurable font sizes:
   - `12`
   - `14`
   - `16`
   - `18`
-- Cuatro temas de lectura:
+- Four reading themes:
   - **Sepia**
-  - **Claro**
-  - **Oscuro**
-  - **Negro**
-- Progreso de lectura persistente.
-- Posición semántica basada en bloque + offset de texto.
-- Orientación, tema y tamaño de fuente persistentes.
-- Interfaz y controles adaptados a PSP.
-- Log de depuración integrado.
+  - **Light**
+  - **Dark**
+  - **Black**
+- Persistent reading progress.
+- Semantic reading position based on document block + text offset.
+- Persistent orientation, theme, and font size.
+- Support for EPUB filenames containing accented / Unicode characters on real PSP hardware.
+- PSP-safe scaling for large EPUB illustrations.
+- Custom PSP XMB icon and background.
+- Integrated debug logging.
 
 ---
 
-## 🎮 Controles
+## Controls
 
-### Biblioteca
+### Library
 
-| Botón | Acción |
+| Button | Action |
 |---|---|
-| `↑ / ↓` | Seleccionar libro |
-| `✕` Cross | Abrir libro |
-| `START` | Salir |
+| `↑ / ↓` | Select book |
+| `✕` Cross | Open selected book |
+| `START` | Exit Larp Reader |
 
-### Lector
+### Reader
 
-| Botón | Acción |
+| Button | Action |
 |---|---|
-| `L / R` | Página anterior / siguiente |
-| `↑ / ↓` | Página anterior / siguiente |
-| `✕` Cross | Cambiar tema |
-| `△` Triangle | Abrir índice |
-| `□` Square | Landscape / Portrait |
-| `○` Circle | Volver a la biblioteca |
-| `SELECT` | Cambiar tamaño de fuente |
-| `START` | Guardar progreso y salir |
+| `L / R` | Previous / next page |
+| `↑ / ↓` | Previous / next page |
+| `✕` Cross | Change reading theme |
+| `△` Triangle | Open table of contents |
+| `□` Square | Switch landscape / portrait |
+| `○` Circle | Return to library |
+| `SELECT` | Change font size |
+| `START` | Save progress and exit |
 
-### Índice
+### Table of Contents
 
-| Botón | Acción |
+| Button | Action |
 |---|---|
-| `↑ / ↓` | Mover selección |
-| `✕` Cross | Ir al capítulo seleccionado |
-| `○` Circle | Cerrar índice |
-| `△` Triangle | Cerrar índice |
-| `START` | Guardar progreso y salir |
+| `↑ / ↓` | Move selection |
+| `✕` Cross | Jump to selected chapter |
+| `○` Circle | Close table of contents |
+| `△` Triangle | Close table of contents |
+| `START` | Save progress and exit |
 
 ---
 
-## 🎨 Temas de lectura
+## Reading Themes
 
-Pulsa `✕` mientras estás leyendo para cambiar entre:
+Press `✕` while reading to cycle through:
 
 ```text
-Sepia → Claro → Oscuro → Negro → Sepia
+Sepia → Light → Dark → Black → Sepia
 ```
 
-La selección queda guardada en `settings.cfg`.
+The selected theme is stored in `settings.cfg`.
 
 ---
 
-## 🔤 Tamaño de fuente
+## Font Size
 
-Pulsa `SELECT` mientras lees:
+Press `SELECT` while reading:
 
 ```text
 12 → 14 → 16 → 18 → 12
 ```
 
-El documento se vuelve a paginar manteniendo la posición semántica actual.
+The current chapter is reflowed while keeping the same semantic reading position.
 
 ---
 
-## ↕️ Modo Portrait
+## Portrait Mode
 
-Pulsa `□` para alternar:
+Press `□` to switch between:
 
 ```text
 Landscape ↔ Portrait
 ```
 
-Portrait usa un canvas lógico de `272×480` y el contenido se adapta mediante reflow.
+Portrait mode uses direct rendering to the PSP's physical `480×272` framebuffer.
 
-El lector conserva la misma posición semántica aunque el número total de páginas cambie entre orientaciones.
+Logical portrait coordinates are transformed to the physical screen, while text and image surfaces are rotated before texture creation.
+
+This avoids relying on a large off-screen portrait render target and works correctly on real PSP hardware.
+
+The semantic reading position is preserved even though the total page count changes between orientations.
 
 ---
 
-# 🛠️ Compilación
+## Real PSP Hardware Compatibility
 
-## Requisitos
+Larp Reader was developed with PPSSPP for fast iteration, but the final reader has also been tested on a real **PSP-3000**.
 
-Necesitas una instalación funcional de **PSPDEV**.
+Testing on real hardware exposed several issues that were not visible in the emulator.
 
-Además del toolchain de PSP, el proyecto utiliza:
+### 512×512 texture limit
+
+The PSP cannot create arbitrarily large textures.
+
+Large EPUB illustrations are decoded, scaled to a PSP-safe size, and only then uploaded as textures.
+
+This prevents errors such as:
+
+```text
+Texture dimensions are limited to 512x512
+```
+
+and also avoids portrait rotation failures caused by oversized image surfaces.
+
+### Accented and Unicode EPUB filenames
+
+Real PSP Memory Stick filesystem behavior differs from a regular desktop filesystem.
+
+Larp Reader uses native PSP directory APIs and handles FAT filename aliases so files such as:
+
+```text
+Nagaru Tanigawa - Un día lluvioso.epub
+Nagaru Tanigawa - Volumen 1 La Melancolía de Suzumiya Haruhi.epub
+```
+
+can be detected and opened correctly on real hardware.
+
+---
+
+# Installation
+
+The easiest way to install Larp Reader is to download the latest release ZIP.
+
+## Memory Stick layout
+
+After extracting the release, copy the `PSP` and `BOOKS` folders to the root of your Memory Stick.
+
+The final layout should look like this:
+
+```text
+ms0:/
+├── BOOKS/
+│   ├── book1.epub
+│   ├── book2.epub
+│   └── ...
+│
+└── PSP/
+    └── GAME/
+        └── LarpReader/
+            ├── EBOOT.PBP
+            └── assets/
+                └── fonts/
+                    ├── NotoSans-Regular.ttf
+                    └── OFL.txt
+```
+
+Put your EPUB files inside:
+
+```text
+ms0:/BOOKS/
+```
+
+Then launch Larp Reader from:
+
+```text
+Game → Memory Stick → Larp Reader
+```
+
+---
+
+# Building from Source
+
+## Requirements
+
+You need a working **PSPDEV / PSPSDK** installation.
+
+The project uses:
 
 - CMake `>= 3.20`
 - Ninja
@@ -160,9 +245,9 @@ Además del toolchain de PSP, el proyecto utiliza:
 - liblzma
 - zlib
 
-Las bibliotecas deben estar instaladas para el target PSP dentro de tu entorno PSPDEV.
+All libraries must be installed for the PSP target inside your PSPDEV environment.
 
-Comprueba primero:
+Check your toolchain first:
 
 ```bash
 echo "$PSPDEV"
@@ -171,7 +256,7 @@ cmake --version
 ninja --version
 ```
 
-`$PSPDEV` debe apuntar a tu instalación de PSPDEV. Un ejemplo habitual es:
+A common PSPDEV setup is:
 
 ```bash
 export PSPDEV=/opt/pspdev
@@ -180,24 +265,24 @@ export PATH="$PSPDEV/bin:$PATH"
 
 ---
 
-## Compilar desde cero
+## Build
 
-Desde la raíz del repositorio:
+From the repository root:
 
 ```bash
 rm -rf build
 
 cmake \
-    -S . \
-    -B build \
-    -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE="$PSPDEV/psp/share/pspdev.cmake" \
-    -DCMAKE_BUILD_TYPE=Release
+  -S . \
+  -B build \
+  -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$PSPDEV/psp/share/pspdev.cmake" \
+  -DCMAKE_BUILD_TYPE=Release
 
 cmake --build build
 ```
 
-Si todo sale bien se generará:
+If the build succeeds, the PSP executable will be generated at:
 
 ```text
 build/EBOOT.PBP
@@ -205,111 +290,79 @@ build/EBOOT.PBP
 
 ---
 
-## 📁 Estructura necesaria
+## XMB Artwork
 
-Larp Reader espera encontrar la fuente en:
-
-```text
-PSP/GAME/LarpReader/
-├── EBOOT.PBP
-└── assets/
-    └── fonts/
-        └── NotoSans-Regular.ttf
-```
-
-Los libros van separados, en:
+The PSP XMB artwork is stored in:
 
 ```text
-BOOKS/
-├── libro1.epub
-├── libro2.epub
-└── ...
+assets/xmb/
+├── ICON0.PNG
+└── PIC1.PNG
 ```
 
-Desde el código, esas rutas corresponden a:
+Expected dimensions:
 
 ```text
-ms0:/PSP/GAME/LarpReader/
-ms0:/BOOKS/
+ICON0.PNG → 144×82
+PIC1.PNG  → 480×272
 ```
+
+These files are embedded directly inside `EBOOT.PBP` during the build.
+
+They do not need to be copied separately to the Memory Stick.
 
 ---
 
-# 🧪 Ejecutar en PPSSPP
+# Running in PPSSPP
 
-En Linux, una instalación típica de PPSSPP utiliza:
+On Linux, a common PPSSPP directory is:
 
 ```text
 ~/.config/ppsspp/
 ```
 
-Puedes preparar Larp Reader así:
+Prepare Larp Reader with:
 
 ```bash
 mkdir -p ~/.config/ppsspp/PSP/GAME/LarpReader/assets/fonts
 mkdir -p ~/.config/ppsspp/BOOKS
 
 cp build/EBOOT.PBP \
-    ~/.config/ppsspp/PSP/GAME/LarpReader/EBOOT.PBP
+  ~/.config/ppsspp/PSP/GAME/LarpReader/EBOOT.PBP
 
 cp assets/fonts/NotoSans-Regular.ttf \
-    ~/.config/ppsspp/PSP/GAME/LarpReader/assets/fonts/
+  ~/.config/ppsspp/PSP/GAME/LarpReader/assets/fonts/
+
+cp assets/fonts/OFL.txt \
+  ~/.config/ppsspp/PSP/GAME/LarpReader/assets/fonts/
 ```
 
-Después copia tus EPUB:
+Copy EPUB files:
 
 ```bash
 cp ~/Books/*.epub ~/.config/ppsspp/BOOKS/
 ```
 
-Y ejecuta:
+Then launch:
 
 ```bash
 PPSSPPSDL \
-    ~/.config/ppsspp/PSP/GAME/LarpReader/EBOOT.PBP
+  ~/.config/ppsspp/PSP/GAME/LarpReader/EBOOT.PBP
 ```
 
-También puedes lanzar directamente la build desde la raíz del proyecto:
+You can also launch the generated build directly:
 
 ```bash
 PPSSPPSDL "$PWD/build/EBOOT.PBP"
 ```
 
-> La ubicación del directorio de PPSSPP puede variar dependiendo del sistema operativo o del tipo de instalación.
+> PPSSPP paths may vary depending on the operating system and installation method.
 
 ---
 
-# 🕹️ Instalar en una PSP
+## Files Generated by Larp Reader
 
-Copia esta estructura a la Memory Stick:
-
-```text
-ms0:/
-├── BOOKS/
-│   └── tus-libros.epub
-│
-└── PSP/
-    └── GAME/
-        └── LarpReader/
-            ├── EBOOT.PBP
-            └── assets/
-                └── fonts/
-                    └── NotoSans-Regular.ttf
-```
-
-Después inicia **Larp Reader** desde:
-
-```text
-Juego → Memory Stick
-```
-
-Los EPUB colocados dentro de `ms0:/BOOKS/` aparecerán automáticamente en la biblioteca.
-
----
-
-## 💾 Archivos generados por Larp Reader
-
-La aplicación guarda sus datos en:
+Runtime files are stored in:
 
 ```text
 ms0:/PSP/GAME/LarpReader/
@@ -317,13 +370,13 @@ ms0:/PSP/GAME/LarpReader/
 
 ### `progress.tsv`
 
-Guarda el progreso de lectura.
+Stores reading progress for each book.
 
-La versión actual utiliza una posición semántica para poder conservar el punto de lectura aunque cambie la paginación.
+The current progress format uses a semantic document position so changing pagination does not lose the reading location.
 
 ### `settings.cfg`
 
-Guarda preferencias como:
+Stores reader preferences such as:
 
 ```text
 orientation=landscape
@@ -333,9 +386,9 @@ font_size=14
 
 ### `debug.log`
 
-Contiene información útil para depurar EPUBs y problemas del renderer.
+Contains useful information for debugging EPUB parsing, layout, images, filesystem behavior, and rendering issues.
 
-En PPSSPP para Linux normalmente se encuentra en:
+In a typical Linux PPSSPP setup:
 
 ```text
 ~/.config/ppsspp/PSP/GAME/LarpReader/debug.log
@@ -343,62 +396,111 @@ En PPSSPP para Linux normalmente se encuentra en:
 
 ---
 
-## 📚 Compatibilidad EPUB
+## EPUB Compatibility
 
-Larp Reader implementa un renderer propio y **no es un navegador web completo**.
+Larp Reader uses its own lightweight renderer.
 
-Está pensado principalmente para EPUBs tradicionales de texto, novelas y libros con ilustraciones.
+It is **not a full web browser** and does not attempt to implement the complete HTML/CSS platform.
 
-Actualmente soporta las partes del formato necesarias para:
+It is primarily designed for traditional EPUB books, novels, and illustrated light novels.
 
-- metadata básica;
+Currently supported areas include:
+
+- basic metadata;
+- manifest;
 - spine;
-- tabla de contenidos;
-- anchors;
-- XHTML;
-- texto UTF-8;
-- JPEG / PNG;
-- estilos tipográficos básicos.
+- table of contents;
+- internal anchors;
+- XHTML text;
+- UTF-8 text;
+- JPEG images;
+- PNG images;
+- basic typography;
+- captions;
+- mixed text and images.
 
-EPUBs con CSS complejo, JavaScript, DRM, layouts fijos avanzados o contenido web muy elaborado pueden no renderizar correctamente.
+EPUBs that depend heavily on complex CSS, JavaScript, DRM, advanced fixed layouts, or browser-specific behavior may not render correctly.
 
 ---
 
-## 🧱 Estructura del proyecto
+## Supported Formats
+
+Larp Reader currently supports:
+
+```text
+EPUB
+```
+
+It does **not** currently support:
+
+```text
+PDF
+CBZ
+TXT
+```
+
+No other ebook format should be assumed to work unless it is explicitly documented here.
+
+---
+
+## Project Structure
 
 ```text
 LarpReader/
 ├── assets/
-│   └── fonts/
-│       └── NotoSans-Regular.ttf
+│   ├── fonts/
+│   │   ├── NotoSans-Regular.ttf
+│   │   └── OFL.txt
+│   └── xmb/
+│       ├── ICON0.PNG
+│       └── PIC1.PNG
 ├── src/
 │   └── main.cpp
 ├── CMakeLists.txt
 └── README.md
 ```
 
----
-
-## 🔬 Estado del proyecto
-
-`v0.0.19` constituye la primera versión funcional completa del lector.
-
-La versión actual ha sido desarrollada y probada principalmente con **PPSSPP**.  
-Las pruebas exhaustivas en hardware PSP real todavía son una etapa importante del proyecto.
+Build and release directories are generated locally and are not required as part of the source tree.
 
 ---
 
-## ⚠️ Nota sobre los libros
+## Hardware Tested
 
-Este repositorio **no incluye EPUBs comerciales o con copyright**.
+The current version has been tested successfully on:
 
-Usa únicamente libros propios, de dominio público o archivos para los que tengas permiso de uso.
+```text
+Sony PSP-3000
+System Software 6.61
+ARK-5 cIPL
+```
+
+PPSSPP is still extremely useful during development, but real PSP testing is important because some filesystem, memory, texture, and renderer behavior is hardware-specific.
 
 ---
 
-## 🖤 Créditos
+## Releases
 
-**Larp Reader** fue creado por **Xergno** bajo **DEAD SMILE**.
+Download packaged builds from:
+
+https://github.com/vx66/larp-reader/releases
+
+The release ZIP contains the correct PSP folder structure and a multilingual installation guide.
+
+---
+
+## Books and Copyright
+
+This repository does **not** include commercial or copyrighted EPUB books.
+
+Use your own books, public-domain books, or files that you have permission to use.
+
+---
+
+## Credits
+
+**Larp Reader** was created by **Xergno** under **DEAD SMILE**.
+
+Noto Sans is distributed under the **SIL Open Font License**. The corresponding `OFL.txt` file is included with the font.
 
 ---
 
