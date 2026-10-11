@@ -4,6 +4,8 @@
 
 ### A lightweight native EPUB reader for the Sony PSP
 
+**Created by Xergno · DEAD SMILE**
+
 ![Version](https://img.shields.io/badge/version-0.0.19-6f5a87?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Sony%20PSP-2f3437?style=flat-square)
 ![Language](https://img.shields.io/badge/C%2B%2B-17-4d6d8a?style=flat-square)
@@ -391,6 +393,12 @@ Las pruebas exhaustivas en hardware PSP real todavía son una etapa importante d
 Este repositorio **no incluye EPUBs comerciales o con copyright**.
 
 Usa únicamente libros propios, de dominio público o archivos para los que tengas permiso de uso.
+
+---
+
+## 🖤 Créditos
+
+**Larp Reader** fue creado por **Xergno** bajo **DEAD SMILE**.
 
 ---
 
