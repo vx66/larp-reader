@@ -1,7 +1,6 @@
 #include <SDL.h>
 #include <SDL_image.h>
 #include <SDL_ttf.h>
-
 #include <tinyxml2.h>
 #include <zip.h>
 
@@ -19,213 +18,176 @@
 #include <utility>
 #include <vector>
 
-namespace
-{
+namespace {
 
 constexpr int SCREEN_WIDTH = 480;
 constexpr int SCREEN_HEIGHT = 272;
-
-constexpr int READER_VISIBLE_LINES = 11;
+constexpr int TEXT_LEFT = 22;
+constexpr int TEXT_WIDTH = 436;
+constexpr int READER_TOP = 45;
+constexpr int READER_BOTTOM = 242;
 constexpr int READER_LINE_HEIGHT = 18;
-
+constexpr int READER_VISIBLE_LINES = 11;
 constexpr int TOC_VISIBLE_ITEMS = 7;
 constexpr int TOC_ROW_HEIGHT = 27;
+constexpr int MAX_CAPTION_LINES = 4;
 
-constexpr int COVER_AREA_WIDTH = 436;
-constexpr int COVER_AREA_HEIGHT = 198;
+constexpr const char* BOOKS_PATH = "ms0:/BOOKS";
+constexpr const char* PROGRESS_PATH = "ms0:/PSP/GAME/LarpReader/progress.tsv";
+constexpr const char* DEBUG_LOG_PATH = "ms0:/PSP/GAME/LarpReader/debug.log";
 
-constexpr const char* BOOKS_PATH =
-    "ms0:/BOOKS";
+constexpr zip_uint64_t MAX_XML_SIZE = 4 * 1024 * 1024;
+constexpr zip_uint64_t MAX_IMAGE_SIZE = 16 * 1024 * 1024;
 
-constexpr const char* PROGRESS_PATH =
-    "ms0:/PSP/GAME/LarpReader/progress.tsv";
-
-constexpr const char* DEBUG_LOG_PATH =
-    "ms0:/PSP/GAME/LarpReader/debug.log";
-
-constexpr zip_uint64_t MAX_XML_SIZE =
-    4 * 1024 * 1024;
-
-constexpr zip_uint64_t MAX_IMAGE_SIZE =
-    8 * 1024 * 1024;
-
-enum class Screen
-{
+enum class Screen {
     Library,
     Loading,
     Reader,
     Toc
 };
 
-enum class LoadingStage
-{
+enum class LoadingStage {
     None,
     OpenStructure,
-    LoadChapter,
-    LayoutText,
-    PrepareImage,
+    LoadDocument,
+    LayoutDocument,
     Error
 };
 
-enum class ChapterPosition
-{
+enum class DocumentPosition {
     Start,
     End,
     Restore
 };
 
-enum class ChapterKind
-{
-    None,
+enum class BlockKind {
     Text,
     Image
 };
 
-enum class ReaderContent
-{
-    None,
+enum class PageKind {
     Text,
     Image
 };
 
-struct CachedText
-{
+struct CachedText {
     SDL_Texture* texture = nullptr;
-
     int width = 0;
     int height = 0;
 };
 
-struct Book
-{
+struct Book {
     std::string filename;
     std::string path;
-
     std::string title;
     std::string author;
-
     std::string opfPath;
     std::string error;
-
     bool valid = false;
 };
 
-struct ManifestItem
-{
+struct ManifestItem {
     std::string id;
     std::string href;
     std::string mediaType;
     std::string properties;
 };
 
-struct SpineItem
-{
+struct SpineItem {
     std::string path;
     std::string title;
 };
 
-struct ReaderStructure
-{
+struct TocEntry {
+    std::string title;
+    std::string path;
+    std::string fragment;
+    int spineIndex = -1;
+};
+
+struct ReaderStructure {
     std::vector<SpineItem> spine;
-
+    std::vector<TocEntry> toc;
     std::string error;
-
     bool valid = false;
 };
 
-struct ChapterDocument
-{
-    std::string path;
-
+struct ContentBlock {
+    BlockKind kind = BlockKind::Text;
     std::string text;
     std::string imagePath;
+    bool centered = false;
+};
 
+struct ChapterDocument {
+    std::string path;
+    std::vector<ContentBlock> blocks;
     std::string error;
-
-    ChapterKind kind =
-        ChapterKind::None;
-
     bool valid = false;
     bool skippable = false;
 };
 
-struct ReadingProgress
-{
-    int chapterIndex = 0;
-    int topLine = 0;
+struct TextLine {
+    std::string text;
+    bool centered = false;
 };
 
-struct App
-{
+struct DocumentPage {
+    PageKind kind = PageKind::Text;
+    std::vector<TextLine> lines;
+    std::string imagePath;
+    std::vector<TextLine> captionLines;
+};
+
+struct ReadingProgress {
+    int spineIndex = 0;
+    int pageIndex = 0;
+};
+
+struct App {
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
-
     TTF_Font* fontNormal = nullptr;
     TTF_Font* fontSmall = nullptr;
     TTF_Font* fontReader = nullptr;
-
     SDL_GameController* controller = nullptr;
 
     std::vector<Book> books;
+    std::unordered_map<std::string, CachedText> textCache;
+    std::unordered_map<std::string, ReadingProgress> savedProgress;
 
-    std::unordered_map<std::string, CachedText>
-        textCache;
-
-    std::unordered_map<std::string, ReadingProgress>
-        savedProgress;
-
-    Screen screen =
-        Screen::Library;
-
-    Screen loadingReturnScreen =
-        Screen::Library;
+    Screen screen = Screen::Library;
+    Screen loadingReturnScreen = Screen::Library;
+    LoadingStage loadingStage = LoadingStage::None;
 
     int selected = 0;
+    int currentBookIndex = -1;
 
     std::string readerBookFilename;
     std::string readerTitle;
+    std::vector<SpineItem> readerSpine;
+    std::vector<TocEntry> readerToc;
+    std::vector<DocumentPage> readerPages;
 
-    std::vector<SpineItem>
-        readerSpine;
-
-    int readerChapterIndex = -1;
-
-    std::string readerCurrentChapterPath;
-
-    ReaderContent readerContent =
-        ReaderContent::None;
-
-    std::vector<std::string>
-        readerLines;
-
-    int readerTopLine = 0;
-
-    SDL_Texture* readerImageTexture =
-        nullptr;
-
-    int readerImageWidth = 0;
-    int readerImageHeight = 0;
-
+    int readerSpineIndex = -1;
+    int readerPageIndex = 0;
+    int readerActiveTocIndex = -1;
     int tocSelected = 0;
 
-    LoadingStage loadingStage =
-        LoadingStage::None;
+    SDL_Texture* readerImageTexture = nullptr;
+    int readerImageWidth = 0;
+    int readerImageHeight = 0;
+    std::string readerLoadedImagePath;
+    std::string readerImageError;
 
-    int pendingBookIndex = -1;
-    int pendingChapterIndex = -1;
-
+    int pendingSpineIndex = -1;
     int pendingSearchDirection = 1;
-
-    ChapterPosition pendingChapterPosition =
-        ChapterPosition::Start;
-
-    int pendingRestoreTopLine = 0;
-
-    ChapterDocument pendingChapter;
+    int pendingRestorePage = 0;
+    DocumentPosition pendingPosition = DocumentPosition::Start;
+    ChapterDocument pendingDocument;
 
     std::string loadingMessage;
     std::string loadingDetail;
-
     int loadingWarmupFrames = 0;
 
     bool running = true;
@@ -235,11 +197,10 @@ void debugLog(
     const char* format,
     ...)
 {
-    FILE* file =
-        std::fopen(
-            DEBUG_LOG_PATH,
-            "a"
-        );
+    FILE* file = std::fopen(
+        DEBUG_LOG_PATH,
+        "a"
+    );
 
     if (!file)
         return;
@@ -277,18 +238,17 @@ void debugLog(
 
 void resetDebugLog()
 {
-    FILE* file =
-        std::fopen(
-            DEBUG_LOG_PATH,
-            "w"
-        );
+    FILE* file = std::fopen(
+        DEBUG_LOG_PATH,
+        "w"
+    );
 
     if (!file)
         return;
 
     std::fprintf(
         file,
-        "Larp Reader 0.0.11 debug log\n"
+        "Larp Reader 0.0.13 debug log\n"
     );
 
     std::fprintf(
@@ -323,7 +283,7 @@ bool endsWithEpub(
     const std::string& filename)
 {
     if (
-        filename.length() < 5
+        filename.size() < 5
     )
     {
         return false;
@@ -332,10 +292,93 @@ bool endsWithEpub(
     return
         toLower(
             filename.substr(
-                filename.length() - 5
+                filename.size() - 5
             )
+        ) == ".epub";
+}
+
+int hexValue(
+    char c)
+{
+    if (
+        c >= '0' &&
+        c <= '9'
+    )
+    {
+        return c - '0';
+    }
+
+    if (
+        c >= 'a' &&
+        c <= 'f'
+    )
+    {
+        return 10 + c - 'a';
+    }
+
+    if (
+        c >= 'A' &&
+        c <= 'F'
+    )
+    {
+        return 10 + c - 'A';
+    }
+
+    return -1;
+}
+
+std::string percentDecode(
+    const std::string& input)
+{
+    std::string output;
+
+    output.reserve(
+        input.size()
+    );
+
+    for (
+        std::size_t i = 0;
+        i < input.size();
+        ++i
+    )
+    {
+        if (
+            input[i] == '%' &&
+            i + 2 < input.size()
         )
-        == ".epub";
+        {
+            int high =
+                hexValue(
+                    input[i + 1]
+                );
+
+            int low =
+                hexValue(
+                    input[i + 2]
+                );
+
+            if (
+                high >= 0 &&
+                low >= 0
+            )
+            {
+                output +=
+                    static_cast<char>(
+                        (high << 4) |
+                        low
+                    );
+
+                i += 2;
+
+                continue;
+            }
+        }
+
+        output +=
+            input[i];
+    }
+
+    return output;
 }
 
 const char* localName(
@@ -350,7 +393,8 @@ const char* localName(
             ':'
         );
 
-    return colon
+    return
+        colon
         ? colon + 1
         : name;
 }
@@ -363,33 +407,33 @@ const char* attributeByLocalName(
         return nullptr;
 
     for (
-        const tinyxml2::XMLAttribute* attribute =
+        const tinyxml2::XMLAttribute* a =
             element->FirstAttribute();
 
-        attribute;
+        a;
 
-        attribute =
-            attribute->Next()
+        a =
+            a->Next()
     )
     {
         if (
             std::strcmp(
                 localName(
-                    attribute->Name()
+                    a->Name()
                 ),
                 wanted
             ) == 0
         )
         {
-            return attribute->Value();
+            return
+                a->Value();
         }
     }
 
     return nullptr;
 }
 
-tinyxml2::XMLElement*
-findElementByLocalName(
+tinyxml2::XMLElement* findElementByLocalName(
     tinyxml2::XMLNode* node,
     const char* wanted)
 {
@@ -406,39 +450,40 @@ findElementByLocalName(
             child->NextSibling()
     )
     {
-        tinyxml2::XMLElement* element =
-            child->ToElement();
-
-        if (element)
+        if (
+            tinyxml2::XMLElement* e =
+                child->ToElement()
+        )
         {
             if (
                 std::strcmp(
                     localName(
-                        element->Name()
+                        e->Name()
                     ),
                     wanted
                 ) == 0
             )
             {
-                return element;
+                return e;
             }
         }
 
-        tinyxml2::XMLElement* nested =
-            findElementByLocalName(
-                child,
-                wanted
-            );
-
-        if (nested)
+        if (
+            tinyxml2::XMLElement* nested =
+                findElementByLocalName(
+                    child,
+                    wanted
+                )
+        )
+        {
             return nested;
+        }
     }
 
     return nullptr;
 }
 
-tinyxml2::XMLElement*
-findDirectChildByLocalName(
+tinyxml2::XMLElement* findDirectChildByLocalName(
     tinyxml2::XMLElement* parent,
     const char* wanted)
 {
@@ -474,58 +519,139 @@ findDirectChildByLocalName(
 std::string elementText(
     tinyxml2::XMLElement* element)
 {
-    if (!element)
-        return {};
-
-    const char* text =
-        element->GetText();
-
-    return text
-        ? std::string(text)
-        : std::string();
-}
-
-void appendNodeText(
-    tinyxml2::XMLNode* node,
-    std::string& output)
-{
-    if (!node)
-        return;
-
     if (
-        tinyxml2::XMLText* text =
-            node->ToText()
+        !element ||
+        !element->GetText()
     )
     {
-        const char* value =
-            text->Value();
+        return {};
+    }
 
-        if (value)
-        {
-            output += value;
-        }
+    return
+        element->GetText();
+}
 
+void replaceAll(
+    std::string& value,
+    const std::string& from,
+    const std::string& to)
+{
+    if (
+        from.empty()
+    )
+    {
         return;
     }
 
-    for (
-        tinyxml2::XMLNode* child =
-            node->FirstChild();
+    std::size_t pos =
+        0;
 
-        child;
-
-        child =
-            child->NextSibling()
+    while (
+        (
+            pos =
+                value.find(
+                    from,
+                    pos
+                )
+        ) != std::string::npos
     )
     {
-        appendNodeText(
-            child,
-            output
+        value.replace(
+            pos,
+            from.size(),
+            to
         );
+
+        pos +=
+            to.size();
     }
 }
 
-std::string collapseWhitespace(
+std::string sanitizeXhtmlEntities(
+    std::string xml)
+{
+    replaceAll(
+        xml,
+        "&nbsp;",
+        "&#160;"
+    );
+
+    replaceAll(
+        xml,
+        "&ndash;",
+        "&#8211;"
+    );
+
+    replaceAll(
+        xml,
+        "&mdash;",
+        "&#8212;"
+    );
+
+    replaceAll(
+        xml,
+        "&hellip;",
+        "&#8230;"
+    );
+
+    replaceAll(
+        xml,
+        "&lsquo;",
+        "&#8216;"
+    );
+
+    replaceAll(
+        xml,
+        "&rsquo;",
+        "&#8217;"
+    );
+
+    replaceAll(
+        xml,
+        "&ldquo;",
+        "&#8220;"
+    );
+
+    replaceAll(
+        xml,
+        "&rdquo;",
+        "&#8221;"
+    );
+
+    replaceAll(
+        xml,
+        "&laquo;",
+        "&#171;"
+    );
+
+    replaceAll(
+        xml,
+        "&raquo;",
+        "&#187;"
+    );
+
+    replaceAll(
+        xml,
+        "&copy;",
+        "&#169;"
+    );
+
+    replaceAll(
+        xml,
+        "&reg;",
+        "&#174;"
+    );
+
+    replaceAll(
+        xml,
+        "&trade;",
+        "&#8482;"
+    );
+
+    return xml;
+}
+
+std::string normalizeText(
     const std::string& input)
 {
     std::string output;
@@ -534,10 +660,32 @@ std::string collapseWhitespace(
         false;
 
     for (
-        unsigned char c :
-        input
+        std::size_t i = 0;
+        i < input.size();
+        ++i
     )
     {
+        unsigned char c =
+            static_cast<unsigned char>(
+                input[i]
+            );
+
+        if (
+            c == 0xC2 &&
+            i + 1 < input.size() &&
+            static_cast<unsigned char>(
+                input[i + 1]
+            ) == 0xA0
+        )
+        {
+            pendingSpace =
+                !output.empty();
+
+            ++i;
+
+            continue;
+        }
+
         if (
             std::isspace(c)
         )
@@ -576,6 +724,78 @@ std::string collapseWhitespace(
     return output;
 }
 
+void appendNodeText(
+    tinyxml2::XMLNode* node,
+    std::string& output)
+{
+    if (!node)
+        return;
+
+    if (
+        tinyxml2::XMLText* text =
+            node->ToText()
+    )
+    {
+        if (
+            text->Value()
+        )
+        {
+            output +=
+                text->Value();
+        }
+
+        return;
+    }
+
+    tinyxml2::XMLElement* element =
+        node->ToElement();
+
+    if (
+        element
+    )
+    {
+        const std::string name =
+            toLower(
+                localName(
+                    element->Name()
+                )
+            );
+
+        if (
+            name == "style" ||
+            name == "script" ||
+            name == "img" ||
+            name == "svg"
+        )
+        {
+            return;
+        }
+
+        if (
+            name == "br"
+        )
+        {
+            output += ' ';
+        }
+    }
+
+    for (
+        tinyxml2::XMLNode* child =
+            node->FirstChild();
+
+        child;
+
+        child =
+            child->NextSibling()
+    )
+    {
+        appendNodeText(
+            child,
+            output
+        );
+    }
+}
+
 std::string nodeText(
     tinyxml2::XMLNode* node)
 {
@@ -586,9 +806,10 @@ std::string nodeText(
         raw
     );
 
-    return collapseWhitespace(
-        raw
-    );
+    return
+        normalizeText(
+            raw
+        );
 }
 
 bool readZipEntry(
@@ -661,7 +882,7 @@ bool readZipEntry(
         statInfo.size
     )
     {
-        const zip_int64_t readNow =
+        zip_int64_t readNow =
             zip_fread(
                 file,
                 output.data()
@@ -738,21 +959,8 @@ bool readZipEntryBytes(
             "Missing image: "
             + entryName;
 
-        debugLog(
-            "readZipEntryBytes: zip_stat failed: %s",
-            entryName.c_str()
-        );
-
         return false;
     }
-
-    debugLog(
-        "readZipEntryBytes: %s = %llu bytes",
-        entryName.c_str(),
-        static_cast<unsigned long long>(
-            statInfo.size
-        )
-    );
 
     if (
         statInfo.size >
@@ -794,7 +1002,7 @@ bool readZipEntryBytes(
         statInfo.size
     )
     {
-        const zip_int64_t readNow =
+        zip_int64_t readNow =
             zip_fread(
                 file,
                 output.data()
@@ -842,7 +1050,284 @@ bool readZipEntryBytes(
         )
     );
 
+    debugLog(
+        "Image bytes: %s = %llu",
+        entryName.c_str(),
+        static_cast<unsigned long long>(
+            totalRead
+        )
+    );
+
     return true;
+}
+
+std::string archiveDirectory(
+    const std::string& path)
+{
+    std::size_t pos =
+        path.find_last_of(
+            '/'
+        );
+
+    if (
+        pos ==
+        std::string::npos
+    )
+    {
+        return {};
+    }
+
+    return
+        path.substr(
+            0,
+            pos + 1
+        );
+}
+
+std::string normalizeArchivePath(
+    const std::string& path)
+{
+    std::vector<std::string>
+        parts;
+
+    std::size_t start =
+        0;
+
+    while (
+        start <=
+        path.size()
+    )
+    {
+        std::size_t slash =
+            path.find(
+                '/',
+                start
+            );
+
+        std::size_t end =
+            slash ==
+                std::string::npos
+            ? path.size()
+            : slash;
+
+        std::string part =
+            path.substr(
+                start,
+                end - start
+            );
+
+        if (
+            !part.empty() &&
+            part != "."
+        )
+        {
+            if (
+                part == ".."
+            )
+            {
+                if (
+                    !parts.empty()
+                )
+                {
+                    parts.pop_back();
+                }
+            }
+            else
+            {
+                parts.push_back(
+                    part
+                );
+            }
+        }
+
+        if (
+            slash ==
+            std::string::npos
+        )
+        {
+            break;
+        }
+
+        start =
+            slash + 1;
+    }
+
+    std::string result;
+
+    for (
+        std::size_t i = 0;
+        i < parts.size();
+        ++i
+    )
+    {
+        if (
+            i
+        )
+        {
+            result += '/';
+        }
+
+        result +=
+            parts[i];
+    }
+
+    return result;
+}
+
+struct ArchiveReference {
+    std::string path;
+    std::string fragment;
+};
+
+ArchiveReference resolveArchiveReference(
+    const std::string& baseDocumentPath,
+    const std::string& href)
+{
+    ArchiveReference result;
+
+    std::string cleanHref =
+        href;
+
+    std::size_t fragmentPos =
+        cleanHref.find(
+            '#'
+        );
+
+    if (
+        fragmentPos !=
+        std::string::npos
+    )
+    {
+        result.fragment =
+            percentDecode(
+                cleanHref.substr(
+                    fragmentPos + 1
+                )
+            );
+
+        cleanHref.erase(
+            fragmentPos
+        );
+    }
+
+    std::size_t queryPos =
+        cleanHref.find(
+            '?'
+        );
+
+    if (
+        queryPos !=
+        std::string::npos
+    )
+    {
+        cleanHref.erase(
+            queryPos
+        );
+    }
+
+    cleanHref =
+        percentDecode(
+            cleanHref
+        );
+
+    if (
+        cleanHref.empty()
+    )
+    {
+        result.path =
+            normalizeArchivePath(
+                baseDocumentPath
+            );
+    }
+    else
+    {
+        result.path =
+            normalizeArchivePath(
+                archiveDirectory(
+                    baseDocumentPath
+                )
+                + cleanHref
+            );
+    }
+
+    return result;
+}
+
+std::string resolveArchivePath(
+    const std::string& baseDocumentPath,
+    const std::string& href)
+{
+    return
+        resolveArchiveReference(
+            baseDocumentPath,
+            href
+        ).path;
+}
+
+bool propertyContainsToken(
+    const std::string& properties,
+    const std::string& token)
+{
+    std::size_t start =
+        0;
+
+    while (
+        start <
+        properties.size()
+    )
+    {
+        while (
+            start <
+                properties.size() &&
+            std::isspace(
+                static_cast<unsigned char>(
+                    properties[start]
+                )
+            )
+        )
+        {
+            ++start;
+        }
+
+        if (
+            start >=
+            properties.size()
+        )
+        {
+            break;
+        }
+
+        std::size_t end =
+            start;
+
+        while (
+            end <
+                properties.size() &&
+            !std::isspace(
+                static_cast<unsigned char>(
+                    properties[end]
+                )
+            )
+        )
+        {
+            ++end;
+        }
+
+        if (
+            properties.substr(
+                start,
+                end - start
+            ) == token
+        )
+        {
+            return true;
+        }
+
+        start =
+            end;
+    }
+
+    return false;
 }
 
 bool parseContainer(
@@ -969,26 +1454,20 @@ bool parsePackageMetadata(
         return false;
     }
 
-    tinyxml2::XMLElement* title =
-        findElementByLocalName(
-            metadata,
-            "title"
-        );
-
-    tinyxml2::XMLElement* creator =
-        findElementByLocalName(
-            metadata,
-            "creator"
-        );
-
     book.title =
         elementText(
-            title
+            findElementByLocalName(
+                metadata,
+                "title"
+            )
         );
 
     book.author =
         elementText(
-            creator
+            findElementByLocalName(
+                metadata,
+                "creator"
+            )
         );
 
     if (
@@ -1152,7 +1631,8 @@ std::vector<Book> scanBooks()
         filenames.end()
     );
 
-    std::vector<Book> books;
+    std::vector<Book>
+        books;
 
     books.reserve(
         filenames.size()
@@ -1173,240 +1653,56 @@ std::vector<Book> scanBooks()
     return books;
 }
 
-std::string archiveDirectory(
-    const std::string& path)
+void appendNavEntry(
+    std::vector<TocEntry>& entries,
+    const std::string& title,
+    const ArchiveReference& ref)
 {
-    const std::size_t pos =
-        path.find_last_of(
-            '/'
-        );
-
     if (
-        pos ==
-        std::string::npos
+        title.empty() ||
+        ref.path.empty()
     )
     {
-        return {};
+        return;
     }
-
-    return path.substr(
-        0,
-        pos + 1
-    );
-}
-
-std::string normalizeArchivePath(
-    const std::string& path)
-{
-    std::vector<std::string>
-        parts;
-
-    std::size_t start =
-        0;
-
-    while (
-        start <=
-        path.size()
-    )
-    {
-        const std::size_t slash =
-            path.find(
-                '/',
-                start
-            );
-
-        const std::size_t end =
-            (
-                slash ==
-                std::string::npos
-            )
-            ? path.size()
-            : slash;
-
-        const std::string part =
-            path.substr(
-                start,
-                end - start
-            );
-
-        if (
-            !part.empty() &&
-            part != "."
-        )
-        {
-            if (
-                part == ".."
-            )
-            {
-                if (
-                    !parts.empty()
-                )
-                {
-                    parts.pop_back();
-                }
-            }
-            else
-            {
-                parts.push_back(
-                    part
-                );
-            }
-        }
-
-        if (
-            slash ==
-            std::string::npos
-        )
-        {
-            break;
-        }
-
-        start =
-            slash + 1;
-    }
-
-    std::string result;
 
     for (
-        std::size_t i = 0;
-        i < parts.size();
-        ++i
+        const TocEntry& existing :
+        entries
     )
     {
         if (
-            i > 0
+            existing.path ==
+                ref.path &&
+            existing.fragment ==
+                ref.fragment &&
+            existing.title ==
+                title
         )
         {
-            result += '/';
+            return;
         }
-
-        result +=
-            parts[i];
     }
 
-    return result;
-}
+    TocEntry entry;
 
-std::string resolveArchivePath(
-    const std::string& baseDocumentPath,
-    const std::string& href)
-{
-    std::string cleanHref =
-        href;
+    entry.title =
+        title;
 
-    const std::size_t fragment =
-        cleanHref.find(
-            '#'
-        );
+    entry.path =
+        ref.path;
 
-    if (
-        fragment !=
-        std::string::npos
-    )
-    {
-        cleanHref.erase(
-            fragment
-        );
-    }
+    entry.fragment =
+        ref.fragment;
 
-    const std::size_t query =
-        cleanHref.find(
-            '?'
-        );
-
-    if (
-        query !=
-        std::string::npos
-    )
-    {
-        cleanHref.erase(
-            query
-        );
-    }
-
-    if (
-        cleanHref.empty()
-    )
-    {
-        return {};
-    }
-
-    return normalizeArchivePath(
-        archiveDirectory(
-            baseDocumentPath
+    entries.push_back(
+        std::move(
+            entry
         )
-        + cleanHref
     );
 }
 
-bool propertyContainsToken(
-    const std::string& properties,
-    const std::string& token)
-{
-    std::size_t start =
-        0;
-
-    while (
-        start <
-        properties.size()
-    )
-    {
-        while (
-            start <
-                properties.size() &&
-            std::isspace(
-                static_cast<unsigned char>(
-                    properties[start]
-                )
-            )
-        )
-        {
-            ++start;
-        }
-
-        if (
-            start >=
-            properties.size()
-        )
-        {
-            break;
-        }
-
-        std::size_t end =
-            start;
-
-        while (
-            end <
-                properties.size() &&
-            !std::isspace(
-                static_cast<unsigned char>(
-                    properties[end]
-                )
-            )
-        )
-        {
-            ++end;
-        }
-
-        if (
-            properties.substr(
-                start,
-                end - start
-            ) == token
-        )
-        {
-            return true;
-        }
-
-        start =
-            end;
-    }
-
-    return false;
-}
-
-tinyxml2::XMLElement*
-findNavToc(
+tinyxml2::XMLElement* findNavToc(
     tinyxml2::XMLNode* node)
 {
     if (!node)
@@ -1422,44 +1718,48 @@ findNavToc(
             child->NextSibling()
     )
     {
-        tinyxml2::XMLElement* element =
-            child->ToElement();
-
         if (
-            element &&
-            std::strcmp(
-                localName(
-                    element->Name()
-                ),
-                "nav"
-            ) == 0
+            tinyxml2::XMLElement* element =
+                child->ToElement()
         )
         {
-            const char* type =
-                attributeByLocalName(
-                    element,
-                    "type"
-                );
-
             if (
-                type &&
-                propertyContainsToken(
-                    type,
-                    "toc"
-                )
+                std::strcmp(
+                    localName(
+                        element->Name()
+                    ),
+                    "nav"
+                ) == 0
             )
             {
-                return element;
+                const char* type =
+                    attributeByLocalName(
+                        element,
+                        "type"
+                    );
+
+                if (
+                    type &&
+                    propertyContainsToken(
+                        type,
+                        "toc"
+                    )
+                )
+                {
+                    return element;
+                }
             }
         }
 
-        tinyxml2::XMLElement* nested =
-            findNavToc(
-                child
-            );
-
-        if (nested)
+        if (
+            tinyxml2::XMLElement* nested =
+                findNavToc(
+                    child
+                )
+        )
+        {
             return nested;
+        }
     }
 
     return nullptr;
@@ -1468,64 +1768,45 @@ findNavToc(
 void collectNavLinks(
     tinyxml2::XMLNode* node,
     const std::string& navPath,
-    std::unordered_map<
-        std::string,
-        std::string
-    >& labels)
+    std::vector<TocEntry>& entries)
 {
     if (!node)
         return;
 
-    tinyxml2::XMLElement* element =
-        node->ToElement();
-
     if (
-        element &&
-        std::strcmp(
-            localName(
-                element->Name()
-            ),
-            "a"
-        ) == 0
+        tinyxml2::XMLElement* element =
+            node->ToElement()
     )
     {
-        const char* href =
-            attributeByLocalName(
-                element,
-                "href"
-            );
-
         if (
-            href &&
-            href[0] != '\0' &&
-            href[0] != '#'
+            std::strcmp(
+                localName(
+                    element->Name()
+                ),
+                "a"
+            ) == 0
         )
         {
-            const std::string path =
-                resolveArchivePath(
-                    navPath,
-                    href
-                );
-
-            const std::string title =
-                nodeText(
-                    element
+            const char* href =
+                attributeByLocalName(
+                    element,
+                    "href"
                 );
 
             if (
-                !path.empty() &&
-                !title.empty() &&
-                labels.find(path) ==
-                    labels.end()
+                href &&
+                href[0] != '\0'
             )
             {
-                labels[path] =
-                    title;
-
-                debugLog(
-                    "NAV: %s -> %s",
-                    path.c_str(),
-                    title.c_str()
+                appendNavEntry(
+                    entries,
+                    nodeText(
+                        element
+                    ),
+                    resolveArchiveReference(
+                        navPath,
+                        href
+                    )
                 );
             }
         }
@@ -1544,7 +1825,7 @@ void collectNavLinks(
         collectNavLinks(
             child,
             navPath,
-            labels
+            entries
         );
     }
 }
@@ -1552,10 +1833,7 @@ void collectNavLinks(
 void collectNcxNavPoints(
     tinyxml2::XMLNode* node,
     const std::string& ncxPath,
-    std::unordered_map<
-        std::string,
-        std::string
-    >& labels)
+    std::vector<TocEntry>& entries)
 {
     if (!node)
         return;
@@ -1615,73 +1893,46 @@ void collectNcxNavPoints(
                 src[0] != '\0'
             )
             {
-                const std::string path =
-                    resolveArchivePath(
+                std::string title =
+                    textElement
+                    ? nodeText(
+                        textElement
+                    )
+                    : nodeText(
+                        navLabel
+                    );
+
+                appendNavEntry(
+                    entries,
+                    title,
+                    resolveArchiveReference(
                         ncxPath,
                         src
-                    );
-
-                std::string title;
-
-                if (
-                    textElement
-                )
-                {
-                    title =
-                        nodeText(
-                            textElement
-                        );
-                }
-                else if (
-                    navLabel
-                )
-                {
-                    title =
-                        nodeText(
-                            navLabel
-                        );
-                }
-
-                if (
-                    !path.empty() &&
-                    !title.empty() &&
-                    labels.find(path) ==
-                        labels.end()
-                )
-                {
-                    labels[path] =
-                        title;
-
-                    debugLog(
-                        "NCX: %s -> %s",
-                        path.c_str(),
-                        title.c_str()
-                    );
-                }
+                    )
+                );
             }
         }
 
         collectNcxNavPoints(
             element,
             ncxPath,
-            labels
+            entries
         );
     }
 }
 
-void loadNavigationLabels(
+std::vector<TocEntry> loadNavigationEntries(
     zip_t* archive,
     const std::string& opfPath,
     const std::unordered_map<
         std::string,
         ManifestItem
     >& manifestItems,
-    tinyxml2::XMLElement* spine,
-    std::unordered_map<
-        std::string,
-        std::string
-    >& labels)
+    tinyxml2::XMLElement* spine)
 {
+    std::vector<TocEntry>
+        navEntries;
+
     for (
         const auto& pair :
         manifestItems
@@ -1702,18 +1953,11 @@ void loadNavigationLabels(
             continue;
         }
 
-        const std::string navPath =
+        std::string navPath =
             resolveArchivePath(
                 opfPath,
                 item.href
             );
-
-        if (
-            navPath.empty()
-        )
-        {
-            continue;
-        }
 
         std::string xml;
         std::string error;
@@ -1729,6 +1973,13 @@ void loadNavigationLabels(
         {
             continue;
         }
+
+        xml =
+            sanitizeXhtmlEntities(
+                std::move(
+                    xml
+                )
+            );
 
         tinyxml2::XMLDocument document;
 
@@ -1757,14 +2008,28 @@ void loadNavigationLabels(
                 );
         }
 
-        if (nav)
+        if (
+            nav
+        )
         {
             collectNavLinks(
                 nav,
                 navPath,
-                labels
+                navEntries
             );
         }
+    }
+
+    if (
+        !navEntries.empty()
+    )
+    {
+        debugLog(
+            "Using EPUB 3 NAV: %zu entries",
+            navEntries.size()
+        );
+
+        return navEntries;
     }
 
     const ManifestItem* ncxItem =
@@ -1777,7 +2042,9 @@ void loadNavigationLabels(
         )
         : nullptr;
 
-    if (tocId)
+    if (
+        tocId
+    )
     {
         auto found =
             manifestItems.find(
@@ -1815,20 +2082,13 @@ void loadNavigationLabels(
     }
 
     if (!ncxItem)
-        return;
+        return {};
 
-    const std::string ncxPath =
+    std::string ncxPath =
         resolveArchivePath(
             opfPath,
             ncxItem->href
         );
-
-    if (
-        ncxPath.empty()
-    )
-    {
-        return;
-    }
 
     std::string xml;
     std::string error;
@@ -1842,7 +2102,7 @@ void loadNavigationLabels(
         )
     )
     {
-        return;
+        return {};
     }
 
     tinyxml2::XMLDocument document;
@@ -1855,7 +2115,7 @@ void loadNavigationLabels(
         tinyxml2::XML_SUCCESS
     )
     {
-        return;
+        return {};
     }
 
     tinyxml2::XMLElement* navMap =
@@ -1864,14 +2124,26 @@ void loadNavigationLabels(
             "navMap"
         );
 
-    if (navMap)
+    std::vector<TocEntry>
+        ncxEntries;
+
+    if (
+        navMap
+    )
     {
         collectNcxNavPoints(
             navMap,
             ncxPath,
-            labels
+            ncxEntries
         );
     }
+
+    debugLog(
+        "Using EPUB 2 NCX: %zu entries",
+        ncxEntries.size()
+    );
+
+    return ncxEntries;
 }
 
 std::string fallbackSpineTitle(
@@ -1881,7 +2153,7 @@ std::string fallbackSpineTitle(
     std::string filename =
         path;
 
-    const std::size_t slash =
+    std::size_t slash =
         filename.find_last_of(
             '/'
         );
@@ -1897,7 +2169,7 @@ std::string fallbackSpineTitle(
         );
     }
 
-    const std::string lower =
+    std::string lower =
         toLower(
             filename
         );
@@ -1906,7 +2178,11 @@ std::string fallbackSpineTitle(
         lower.find(
             "cover"
         ) !=
-        std::string::npos
+            std::string::npos ||
+        lower.find(
+            "cubierta"
+        ) !=
+            std::string::npos
     )
     {
         return "Cover";
@@ -1920,6 +2196,66 @@ std::string fallbackSpineTitle(
     )
     {
         return "Title page";
+    }
+
+    if (
+        lower.find(
+            "prologo"
+        ) !=
+        std::string::npos
+    )
+    {
+        return "Prólogo";
+    }
+
+    if (
+        lower.find(
+            "epilogo"
+        ) !=
+        std::string::npos
+    )
+    {
+        return "Epílogo";
+    }
+
+    if (
+        lower.find(
+            "autor"
+        ) !=
+        std::string::npos
+    )
+    {
+        return "Autor";
+    }
+
+    if (
+        lower.find(
+            "editor"
+        ) !=
+        std::string::npos
+    )
+    {
+        return "Editor";
+    }
+
+    if (
+        lower.find(
+            "info"
+        ) !=
+        std::string::npos
+    )
+    {
+        return "Información";
+    }
+
+    if (
+        lower.find(
+            "sinopsis"
+        ) !=
+        std::string::npos
+    )
+    {
+        return "Sinopsis";
     }
 
     if (
@@ -1942,21 +2278,57 @@ std::string fallbackSpineTitle(
         return "Copyright";
     }
 
-    if (
-        lower.find(
-            "dedication"
-        ) !=
-        std::string::npos
-    )
-    {
-        return "Dedication";
-    }
-
     return
         "Section "
         + std::to_string(
             index + 1
         );
+}
+
+int findSpineIndexByPath(
+    const std::vector<SpineItem>& spine,
+    const std::string& path)
+{
+    for (
+        std::size_t i = 0;
+        i < spine.size();
+        ++i
+    )
+    {
+        if (
+            spine[i].path ==
+            path
+        )
+        {
+            return
+                static_cast<int>(
+                    i
+                );
+        }
+    }
+
+    return -1;
+}
+
+bool tocHasSpineIndex(
+    const std::vector<TocEntry>& toc,
+    int spineIndex)
+{
+    for (
+        const TocEntry& entry :
+        toc
+    )
+    {
+        if (
+            entry.spineIndex ==
+            spineIndex
+        )
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 ReaderStructure loadReaderStructure(
@@ -2088,16 +2460,6 @@ ReaderStructure loadReaderStructure(
                 "href"
             );
 
-        const char* mediaType =
-            item->Attribute(
-                "media-type"
-            );
-
-        const char* properties =
-            item->Attribute(
-                "properties"
-            );
-
         if (
             !id ||
             !href
@@ -2106,44 +2468,43 @@ ReaderStructure loadReaderStructure(
             continue;
         }
 
-        ManifestItem manifestItem;
+        ManifestItem m;
 
-        manifestItem.id =
+        m.id =
             id;
 
-        manifestItem.href =
+        m.href =
             href;
 
-        if (mediaType)
+        if (
+            const char* media =
+                item->Attribute(
+                    "media-type"
+                )
+        )
         {
-            manifestItem.mediaType =
-                mediaType;
+            m.mediaType =
+                media;
         }
 
-        if (properties)
+        if (
+            const char* props =
+                item->Attribute(
+                    "properties"
+                )
+        )
         {
-            manifestItem.properties =
-                properties;
+            m.properties =
+                props;
         }
 
         manifestItems[
-            manifestItem.id
+            m.id
         ] =
-            manifestItem;
+            std::move(
+                m
+            );
     }
-
-    std::unordered_map<
-        std::string,
-        std::string
-    > navigationLabels;
-
-    loadNavigationLabels(
-        archive,
-        book.opfPath,
-        manifestItems,
-        spine,
-        navigationLabels
-    );
 
     for (
         tinyxml2::XMLElement* itemRef =
@@ -2225,62 +2586,35 @@ ReaderStructure loadReaderStructure(
             continue;
         }
 
-        SpineItem spineItem;
+        SpineItem s;
 
-        spineItem.path =
+        s.path =
             resolveArchivePath(
                 book.opfPath,
                 item.href
             );
 
         if (
-            spineItem.path.empty()
+            s.path.empty()
         )
         {
             continue;
         }
 
-        auto label =
-            navigationLabels.find(
-                spineItem.path
+        s.title =
+            fallbackSpineTitle(
+                s.path,
+                static_cast<int>(
+                    result.spine.size()
+                )
             );
-
-        if (
-            label !=
-            navigationLabels.end()
-        )
-        {
-            spineItem.title =
-                label->second;
-        }
-        else
-        {
-            spineItem.title =
-                fallbackSpineTitle(
-                    spineItem.path,
-                    static_cast<int>(
-                        result.spine.size()
-                    )
-                );
-        }
-
-        debugLog(
-            "SPINE %zu: %s -> %s",
-            result.spine.size() + 1,
-            spineItem.path.c_str(),
-            spineItem.title.c_str()
-        );
 
         result.spine.push_back(
             std::move(
-                spineItem
+                s
             )
         );
     }
-
-    zip_close(
-        archive
-    );
 
     if (
         result.spine.empty()
@@ -2289,18 +2623,172 @@ ReaderStructure loadReaderStructure(
         result.error =
             "No readable spine items";
 
+        zip_close(
+            archive
+        );
+
         return result;
     }
 
-    debugLog(
-        "Navigation labels found: %zu",
-        navigationLabels.size()
+    std::vector<TocEntry> rawToc =
+        loadNavigationEntries(
+            archive,
+            book.opfPath,
+            manifestItems,
+            spine
+        );
+
+    zip_close(
+        archive
     );
 
-    debugLog(
-        "Spine items: %zu",
-        result.spine.size()
-    );
+    for (
+        TocEntry entry :
+        rawToc
+    )
+    {
+        entry.spineIndex =
+            findSpineIndexByPath(
+                result.spine,
+                entry.path
+            );
+
+        if (
+            entry.spineIndex < 0
+        )
+        {
+            continue;
+        }
+
+        result.toc.push_back(
+            std::move(
+                entry
+            )
+        );
+    }
+
+    if (
+        !result.spine.empty() &&
+        !tocHasSpineIndex(
+            result.toc,
+            0
+        )
+    )
+    {
+        std::string firstLower =
+            toLower(
+                result.spine[0].path
+            );
+
+        if (
+            firstLower.find(
+                "cover"
+            ) !=
+                std::string::npos ||
+            firstLower.find(
+                "cubierta"
+            ) !=
+                std::string::npos
+        )
+        {
+            TocEntry cover;
+
+            cover.title =
+                "Cover";
+
+            cover.path =
+                result.spine[0].path;
+
+            cover.spineIndex =
+                0;
+
+            result.toc.insert(
+                result.toc.begin(),
+                std::move(
+                    cover
+                )
+            );
+        }
+    }
+
+    if (
+        result.toc.empty()
+    )
+    {
+        for (
+            std::size_t i = 0;
+            i < result.spine.size();
+            ++i
+        )
+        {
+            TocEntry entry;
+
+            entry.title =
+                result.spine[i].title;
+
+            entry.path =
+                result.spine[i].path;
+
+            entry.spineIndex =
+                static_cast<int>(
+                    i
+                );
+
+            result.toc.push_back(
+                std::move(
+                    entry
+                )
+            );
+        }
+    }
+
+    for (
+        const TocEntry& entry :
+        result.toc
+    )
+    {
+        if (
+            entry.fragment.empty()
+        )
+        {
+            result.spine[
+                entry.spineIndex
+            ].title =
+                entry.title;
+        }
+    }
+
+    for (
+        std::size_t i = 0;
+        i < result.spine.size();
+        ++i
+    )
+    {
+        debugLog(
+            "SPINE %zu: %s -> %s",
+            i + 1,
+            result.spine[i].path.c_str(),
+            result.spine[i].title.c_str()
+        );
+    }
+
+    for (
+        std::size_t i = 0;
+        i < result.toc.size();
+        ++i
+    )
+    {
+        debugLog(
+            "TOC %zu: spine=%d path=%s fragment=%s title=%s",
+            i + 1,
+            result.toc[i].spineIndex + 1,
+            result.toc[i].path.c_str(),
+            result.toc[i].fragment.empty()
+                ? "(none)"
+                : result.toc[i].fragment.c_str(),
+            result.toc[i].title.c_str()
+        );
+    }
 
     result.valid =
         true;
@@ -2308,7 +2796,17 @@ ReaderStructure loadReaderStructure(
     return result;
 }
 
-bool isBlockElement(
+bool isIgnoredElementName(
+    const std::string& name)
+{
+    return
+        name == "head" ||
+        name == "style" ||
+        name == "script" ||
+        name == "noscript";
+}
+
+bool isTextBlockName(
     const std::string& name)
 {
     return
@@ -2318,249 +2816,209 @@ bool isBlockElement(
         name == "article" ||
         name == "blockquote" ||
         name == "li" ||
+        name == "dt" ||
+        name == "dd" ||
         name == "h1" ||
         name == "h2" ||
         name == "h3" ||
         name == "h4" ||
         name == "h5" ||
-        name == "h6";
+        name == "h6" ||
+        name == "pre";
 }
 
-bool isIgnoredElement(
-    const std::string& name)
+bool classContains(
+    const char* classValue,
+    const char* token)
 {
-    return
-        name == "head" ||
-        name == "style" ||
-        name == "script" ||
-        name == "svg";
-}
-
-void appendXhtmlText(
-    tinyxml2::XMLNode* node,
-    std::string& output)
-{
-    if (!node)
-        return;
-
     if (
-        tinyxml2::XMLText* text =
-            node->ToText()
+        !classValue ||
+        !token
     )
     {
-        const char* value =
-            text->Value();
-
-        if (value)
-        {
-            output += value;
-        }
-
-        return;
+        return false;
     }
 
-    tinyxml2::XMLElement* element =
-        node->ToElement();
+    std::string classes =
+        toLower(
+            classValue
+        );
 
-    if (element)
-    {
-        const std::string name =
+    return
+        classes.find(
+            toLower(
+                token
+            )
+        ) !=
+        std::string::npos;
+}
+
+bool styleContainsCentered(
+    const char* styleValue)
+{
+    if (!styleValue)
+        return false;
+
+    std::string style =
+        toLower(
+            styleValue
+        );
+
+    return
+        style.find(
+            "text-align"
+        ) !=
+            std::string::npos &&
+        style.find(
+            "center"
+        ) !=
+            std::string::npos;
+}
+
+bool elementIsCentered(
+    tinyxml2::XMLElement* element)
+{
+    if (!element)
+        return false;
+
+    std::string name =
+        toLower(
             localName(
                 element->Name()
-            );
-
-        if (
-            isIgnoredElement(
-                name
             )
-        )
-        {
-            return;
-        }
+        );
 
-        if (
-            name == "br"
-        )
-        {
-            output += '\n';
-
-            return;
-        }
-
-        if (
-            isBlockElement(
-                name
-            ) &&
-            !output.empty() &&
-            output.back() != '\n'
-        )
-        {
-            output += '\n';
-        }
+    if (
+        name == "h1" ||
+        name == "h2" ||
+        name == "h3" ||
+        name == "h4" ||
+        name == "h5" ||
+        name == "h6"
+    )
+    {
+        return true;
     }
 
+    const char* classes =
+        element->Attribute(
+            "class"
+        );
+
+    if (
+        classContains(
+            classes,
+            "centrado"
+        ) ||
+        classContains(
+            classes,
+            "capitulo"
+        ) ||
+        classContains(
+            classes,
+            "title"
+        ) ||
+        classContains(
+            classes,
+            "subtitle"
+        ) ||
+        classContains(
+            classes,
+            "separador"
+        ) ||
+        classContains(
+            classes,
+            "fin"
+        )
+    )
+    {
+        return true;
+    }
+
+    return
+        styleContainsCentered(
+            element->Attribute(
+                "style"
+            )
+        );
+}
+
+bool hasDirectStructuralChild(
+    tinyxml2::XMLElement* element)
+{
+    if (!element)
+        return false;
+
     for (
-        tinyxml2::XMLNode* child =
-            node->FirstChild();
+        tinyxml2::XMLElement* child =
+            element->FirstChildElement();
 
         child;
 
         child =
-            child->NextSibling()
+            child->NextSiblingElement()
     )
     {
-        appendXhtmlText(
-            child,
-            output
-        );
-    }
-
-    if (element)
-    {
-        const std::string name =
-            localName(
-                element->Name()
+        std::string name =
+            toLower(
+                localName(
+                    child->Name()
+                )
             );
 
         if (
-            isBlockElement(
+            name == "img" ||
+            name == "svg" ||
+            isTextBlockName(
                 name
-            ) &&
-            !output.empty() &&
-            output.back() != '\n'
-        )
-        {
-            output += '\n';
-        }
-    }
-}
-
-std::string normalizeExtractedText(
-    const std::string& input)
-{
-    std::string output;
-
-    bool pendingSpace =
-        false;
-
-    for (
-        unsigned char c :
-        input
-    )
-    {
-        if (
-            c == '\n' ||
-            c == '\r'
-        )
-        {
-            while (
-                !output.empty() &&
-                output.back() == ' '
             )
-            {
-                output.pop_back();
-            }
-
-            if (
-                !output.empty() &&
-                output.back() != '\n'
-            )
-            {
-                output += '\n';
-            }
-
-            pendingSpace =
-                false;
-
-            continue;
-        }
-
-        if (
-            c == ' ' ||
-            c == '\t'
         )
         {
-            pendingSpace =
-                true;
-
-            continue;
+            return true;
         }
-
-        if (
-            pendingSpace &&
-            !output.empty() &&
-            output.back() != '\n'
-        )
-        {
-            output += ' ';
-        }
-
-        pendingSpace =
-            false;
-
-        output +=
-            static_cast<char>(
-                c
-            );
     }
 
-    while (
-        !output.empty() &&
-        (
-            output.back() == ' ' ||
-            output.back() == '\n'
-        )
-    )
-    {
-        output.pop_back();
-    }
-
-    return output;
+    return false;
 }
 
-std::string extractXhtmlText(
-    const std::string& xml)
-{
-    tinyxml2::XMLDocument document;
-
-    if (
-        document.Parse(
-            xml.data(),
-            xml.size()
-        ) !=
-        tinyxml2::XML_SUCCESS
-    )
-    {
-        return {};
-    }
-
-    tinyxml2::XMLElement* body =
-        findElementByLocalName(
-            &document,
-            "body"
-        );
-
-    if (!body)
-        return {};
-
-    std::string output;
-
-    appendXhtmlText(
-        body,
-        output
-    );
-
-    return normalizeExtractedText(
-        output
-    );
-}
-
-std::string findImageReferenceRecursive(
+std::string firstSvgImageReference(
     tinyxml2::XMLNode* node)
 {
     if (!node)
         return {};
 
+    if (
+        tinyxml2::XMLElement* element =
+            node->ToElement()
+    )
+    {
+        std::string name =
+            toLower(
+                localName(
+                    element->Name()
+                )
+            );
+
+        if (
+            name == "image"
+        )
+        {
+            const char* href =
+                attributeByLocalName(
+                    element,
+                    "href"
+                );
+
+            if (
+                href &&
+                href[0] != '\0'
+            )
+            {
+                return href;
+            }
+        }
+    }
+
     for (
         tinyxml2::XMLNode* child =
             node->FirstChild();
@@ -2571,99 +3029,213 @@ std::string findImageReferenceRecursive(
             child->NextSibling()
     )
     {
-        tinyxml2::XMLElement* element =
-            child->ToElement();
-
-        if (element)
-        {
-            const std::string name =
-                localName(
-                    element->Name()
-                );
-
-            if (
-                name == "img"
-            )
-            {
-                const char* src =
-                    attributeByLocalName(
-                        element,
-                        "src"
-                    );
-
-                if (
-                    src &&
-                    src[0] != '\0'
-                )
-                {
-                    return src;
-                }
-            }
-
-            if (
-                name == "image"
-            )
-            {
-                const char* href =
-                    attributeByLocalName(
-                        element,
-                        "href"
-                    );
-
-                if (
-                    href &&
-                    href[0] != '\0'
-                )
-                {
-                    return href;
-                }
-            }
-        }
-
-        std::string nested =
-            findImageReferenceRecursive(
+        std::string result =
+            firstSvgImageReference(
                 child
             );
 
         if (
-            !nested.empty()
+            !result.empty()
         )
         {
-            return nested;
+            return result;
         }
     }
 
     return {};
 }
 
-std::string extractFirstImageReference(
-    const std::string& xml)
+void collectContentBlocks(
+    tinyxml2::XMLNode* node,
+    const std::string& xhtmlPath,
+    bool inheritedCentered,
+    std::vector<ContentBlock>& blocks)
 {
-    tinyxml2::XMLDocument document;
+    if (!node)
+        return;
 
-    if (
-        document.Parse(
-            xml.data(),
-            xml.size()
-        ) !=
-        tinyxml2::XML_SUCCESS
-    )
+    tinyxml2::XMLElement* element =
+        node->ToElement();
+
+    if (!element)
     {
-        return {};
+        for (
+            tinyxml2::XMLNode* child =
+                node->FirstChild();
+
+            child;
+
+            child =
+                child->NextSibling()
+        )
+        {
+            collectContentBlocks(
+                child,
+                xhtmlPath,
+                inheritedCentered,
+                blocks
+            );
+        }
+
+        return;
     }
 
-    tinyxml2::XMLElement* body =
-        findElementByLocalName(
-            &document,
-            "body"
+    const std::string name =
+        toLower(
+            localName(
+                element->Name()
+            )
         );
 
-    if (!body)
-        return {};
+    if (
+        isIgnoredElementName(
+            name
+        )
+    )
+    {
+        return;
+    }
 
-    return findImageReferenceRecursive(
-        body
-    );
+    bool centered =
+        inheritedCentered ||
+        elementIsCentered(
+            element
+        );
+
+    if (
+        name == "img"
+    )
+    {
+        const char* src =
+            attributeByLocalName(
+                element,
+                "src"
+            );
+
+        if (
+            src &&
+            src[0] != '\0'
+        )
+        {
+            ContentBlock block;
+
+            block.kind =
+                BlockKind::Image;
+
+            block.imagePath =
+                resolveArchivePath(
+                    xhtmlPath,
+                    src
+                );
+
+            block.centered =
+                true;
+
+            blocks.push_back(
+                std::move(
+                    block
+                )
+            );
+        }
+
+        return;
+    }
+
+    if (
+        name == "svg"
+    )
+    {
+        std::string href =
+            firstSvgImageReference(
+                element
+            );
+
+        if (
+            !href.empty()
+        )
+        {
+            ContentBlock block;
+
+            block.kind =
+                BlockKind::Image;
+
+            block.imagePath =
+                resolveArchivePath(
+                    xhtmlPath,
+                    href
+                );
+
+            block.centered =
+                true;
+
+            blocks.push_back(
+                std::move(
+                    block
+                )
+            );
+        }
+
+        return;
+    }
+
+    if (
+        isTextBlockName(
+            name
+        ) &&
+        !hasDirectStructuralChild(
+            element
+        )
+    )
+    {
+        std::string text =
+            nodeText(
+                element
+            );
+
+        if (
+            !text.empty()
+        )
+        {
+            ContentBlock block;
+
+            block.kind =
+                BlockKind::Text;
+
+            block.text =
+                std::move(
+                    text
+                );
+
+            block.centered =
+                centered;
+
+            blocks.push_back(
+                std::move(
+                    block
+                )
+            );
+        }
+
+        return;
+    }
+
+    for (
+        tinyxml2::XMLNode* child =
+            element->FirstChild();
+
+        child;
+
+        child =
+            child->NextSibling()
+    )
+    {
+        collectContentBlocks(
+            child,
+            xhtmlPath,
+            centered,
+            blocks
+        );
+    }
 }
 
 ChapterDocument loadChapterDocument(
@@ -2693,13 +3265,13 @@ ChapterDocument loadChapterDocument(
         return result;
     }
 
-    std::string chapterXml;
+    std::string xml;
 
     if (
         !readZipEntry(
             archive,
             chapterPath,
-            chapterXml,
+            xml,
             result.error
         )
     )
@@ -2715,59 +3287,112 @@ ChapterDocument loadChapterDocument(
         archive
     );
 
-    result.text =
-        extractXhtmlText(
-            chapterXml
+    xml =
+        sanitizeXhtmlEntities(
+            std::move(
+                xml
+            )
+        );
+
+    tinyxml2::XMLDocument document;
+
+    tinyxml2::XMLError parseResult =
+        document.Parse(
+            xml.data(),
+            xml.size()
         );
 
     if (
-        !result.text.empty()
+        parseResult !=
+        tinyxml2::XML_SUCCESS
     )
     {
-        result.kind =
-            ChapterKind::Text;
-
-        result.valid =
-            true;
-
-        return result;
-    }
-
-    const std::string imageReference =
-        extractFirstImageReference(
-            chapterXml
-        );
-
-    if (
-        !imageReference.empty()
-    )
-    {
-        result.imagePath =
-            resolveArchivePath(
-                chapterPath,
-                imageReference
-            );
+        result.error =
+            "Invalid XHTML";
 
         debugLog(
-            "Detected image spine item: xhtml=%s ref=%s resolved=%s",
+            "XHTML parse failed: %s error=%d",
             chapterPath.c_str(),
-            imageReference.c_str(),
-            result.imagePath.c_str()
+            static_cast<int>(
+                parseResult
+            )
         );
 
-        result.kind =
-            ChapterKind::Image;
+        return result;
+    }
 
-        result.valid =
+    tinyxml2::XMLElement* body =
+        findElementByLocalName(
+            &document,
+            "body"
+        );
+
+    if (!body)
+    {
+        result.error =
+            "XHTML has no body";
+
+        result.skippable =
             true;
 
         return result;
     }
 
-    result.error =
-        "Spine item contains no supported content";
+    collectContentBlocks(
+        body,
+        chapterPath,
+        elementIsCentered(
+            body
+        ),
+        result.blocks
+    );
 
-    result.skippable =
+    if (
+        result.blocks.empty()
+    )
+    {
+        result.error =
+            "Spine item contains no supported content";
+
+        result.skippable =
+            true;
+
+        return result;
+    }
+
+    int textBlocks =
+        0;
+
+    int imageBlocks =
+        0;
+
+    for (
+        const ContentBlock& block :
+        result.blocks
+    )
+    {
+        if (
+            block.kind ==
+            BlockKind::Image
+        )
+        {
+            ++imageBlocks;
+        }
+        else
+        {
+            ++textBlocks;
+        }
+    }
+
+    debugLog(
+        "DOCUMENT: %s blocks=%zu text=%d images=%d",
+        chapterPath.c_str(),
+        result.blocks.size(),
+        textBlocks,
+        imageBlocks
+    );
+
+    result.valid =
         true;
 
     return result;
@@ -2789,14 +3414,16 @@ TTF_Font* loadFont(
         paths
     )
     {
-        TTF_Font* font =
-            TTF_OpenFont(
-                path,
-                size
-            );
-
-        if (font)
+        if (
+            TTF_Font* font =
+                TTF_OpenFont(
+                    path,
+                    size
+                )
+        )
+        {
             return font;
+        }
     }
 
     return nullptr;
@@ -2916,10 +3543,11 @@ int measureTextWidth(
         widthCache.end()
     )
     {
-        return found->second;
+        return
+            found->second;
     }
 
-    const int width =
+    int width =
         textPixelWidth(
             font,
             text
@@ -2939,8 +3567,7 @@ int measureTextWidth(
     return width;
 }
 
-std::vector<std::string>
-wrapParagraphFast(
+std::vector<std::string> wrapParagraphFast(
     TTF_Font* font,
     const std::string& paragraph,
     int maxWidth,
@@ -2998,13 +3625,13 @@ wrapParagraphFast(
                 paragraph.size();
         }
 
-        const std::string word =
+        std::string word =
             paragraph.substr(
                 start,
                 end - start
             );
 
-        const int wordWidth =
+        int wordWidth =
             measureTextWidth(
                 font,
                 word,
@@ -3023,7 +3650,7 @@ wrapParagraphFast(
         }
         else
         {
-            const int candidateWidth =
+            int candidateWidth =
                 currentWidth
                 + spaceWidth
                 + wordWidth;
@@ -3069,14 +3696,13 @@ wrapParagraphFast(
     return lines;
 }
 
-std::vector<std::string>
-wrapTextFast(
+std::vector<TextLine> wrapTextBlock(
     TTF_Font* font,
-    const std::string& text,
+    const ContentBlock& block,
     int maxWidth)
 {
-    std::vector<std::string>
-        lines;
+    std::vector<TextLine>
+        output;
 
     std::unordered_map<
         std::string,
@@ -3084,7 +3710,7 @@ wrapTextFast(
     > widthCache;
 
     widthCache.reserve(
-        1024
+        256
     );
 
     int spaceWidth =
@@ -3100,81 +3726,274 @@ wrapTextFast(
         &unusedHeight
     );
 
-    std::size_t start =
-        0;
+    std::vector<std::string> lines =
+        wrapParagraphFast(
+            font,
+            block.text,
+            maxWidth,
+            spaceWidth,
+            widthCache
+        );
 
-    while (
-        start <=
-        text.size()
+    output.reserve(
+        lines.size()
+    );
+
+    for (
+        std::string& line :
+        lines
     )
     {
-        std::size_t end =
-            text.find(
-                '\n',
-                start
+        TextLine textLine;
+
+        textLine.text =
+            std::move(
+                line
             );
 
-        if (
-            end ==
-            std::string::npos
-        )
-        {
-            end =
-                text.size();
-        }
+        textLine.centered =
+            block.centered;
 
-        const std::string paragraph =
-            text.substr(
-                start,
-                end - start
-            );
-
-        if (
-            !paragraph.empty()
-        )
-        {
-            std::vector<std::string>
-                paragraphLines =
-                    wrapParagraphFast(
-                        font,
-                        paragraph,
-                        maxWidth,
-                        spaceWidth,
-                        widthCache
-                    );
-
-            lines.insert(
-                lines.end(),
-                paragraphLines.begin(),
-                paragraphLines.end()
-            );
-
-            lines.push_back(
-                ""
-            );
-        }
-
-        if (
-            end ==
-            text.size()
-        )
-        {
-            break;
-        }
-
-        start =
-            end + 1;
+        output.push_back(
+            std::move(
+                textLine
+            )
+        );
     }
 
+    return output;
+}
+
+void flushTextPage(
+    std::vector<DocumentPage>& pages,
+    std::vector<TextLine>& currentLines)
+{
     if (
-        !lines.empty() &&
-        lines.back().empty()
+        currentLines.empty()
     )
     {
-        lines.pop_back();
+        return;
     }
 
-    return lines;
+    DocumentPage page;
+
+    page.kind =
+        PageKind::Text;
+
+    page.lines =
+        std::move(
+            currentLines
+        );
+
+    pages.push_back(
+        std::move(
+            page
+        )
+    );
+
+    currentLines.clear();
+}
+
+std::vector<DocumentPage> layoutDocument(
+    TTF_Font* font,
+    const ChapterDocument& document)
+{
+    std::vector<DocumentPage>
+        pages;
+
+    std::vector<TextLine>
+        currentLines;
+
+    auto appendTextLines =
+        [&](
+            const std::vector<TextLine>& lines,
+            bool paragraphGap
+        )
+        {
+            if (
+                paragraphGap &&
+                !currentLines.empty() &&
+                static_cast<int>(
+                    currentLines.size()
+                ) <
+                READER_VISIBLE_LINES
+            )
+            {
+                currentLines.push_back(
+                    TextLine{
+                        "",
+                        false
+                    }
+                );
+            }
+
+            for (
+                const TextLine& line :
+                lines
+            )
+            {
+                if (
+                    static_cast<int>(
+                        currentLines.size()
+                    ) >=
+                    READER_VISIBLE_LINES
+                )
+                {
+                    flushTextPage(
+                        pages,
+                        currentLines
+                    );
+                }
+
+                currentLines.push_back(
+                    line
+                );
+            }
+        };
+
+    for (
+        std::size_t i = 0;
+        i < document.blocks.size();
+        ++i
+    )
+    {
+        const ContentBlock& block =
+            document.blocks[i];
+
+        if (
+            block.kind ==
+            BlockKind::Text
+        )
+        {
+            std::vector<TextLine> wrapped =
+                wrapTextBlock(
+                    font,
+                    block,
+                    TEXT_WIDTH
+                );
+
+            appendTextLines(
+                wrapped,
+                true
+            );
+
+            continue;
+        }
+
+        flushTextPage(
+            pages,
+            currentLines
+        );
+
+        DocumentPage imagePage;
+
+        imagePage.kind =
+            PageKind::Image;
+
+        imagePage.imagePath =
+            block.imagePath;
+
+        std::vector<TextLine>
+            candidateCaption;
+
+        std::size_t consumedUntil =
+            i;
+
+        for (
+            std::size_t j = i + 1;
+            j < document.blocks.size();
+            ++j
+        )
+        {
+            const ContentBlock& next =
+                document.blocks[j];
+
+            if (
+                next.kind !=
+                    BlockKind::Text ||
+                !next.centered
+            )
+            {
+                break;
+            }
+
+            std::vector<TextLine> wrapped =
+                wrapTextBlock(
+                    font,
+                    next,
+                    TEXT_WIDTH - 24
+                );
+
+            if (
+                candidateCaption.size()
+                    + wrapped.size() >
+                MAX_CAPTION_LINES
+            )
+            {
+                break;
+            }
+
+            if (
+                !candidateCaption.empty()
+            )
+            {
+                candidateCaption.push_back(
+                    TextLine{
+                        "",
+                        true
+                    }
+                );
+            }
+
+            if (
+                candidateCaption.size()
+                    + wrapped.size() >
+                MAX_CAPTION_LINES
+            )
+            {
+                if (
+                    !candidateCaption.empty() &&
+                    candidateCaption.back()
+                        .text.empty()
+                )
+                {
+                    candidateCaption.pop_back();
+                }
+
+                break;
+            }
+
+            candidateCaption.insert(
+                candidateCaption.end(),
+                wrapped.begin(),
+                wrapped.end()
+            );
+
+            consumedUntil =
+                j;
+        }
+
+        imagePage.captionLines =
+            std::move(
+                candidateCaption
+            );
+
+        pages.push_back(
+            std::move(
+                imagePage
+            )
+        );
+
+        i =
+            consumedUntil;
+    }
+
+    flushTextPage(
+        pages,
+        currentLines
+    );
+
+    return pages;
 }
 
 void destroyReaderImage(
@@ -3197,12 +4016,17 @@ void destroyReaderImage(
 
     app.readerImageHeight =
         0;
+
+    app.readerLoadedImagePath.clear();
+    app.readerImageError.clear();
 }
 
 bool loadImageTextureFromEpub(
     App& app,
     const Book& book,
     const std::string& imagePath,
+    int maxWidth,
+    int maxHeight,
     SDL_Texture*& outputTexture,
     int& outputWidth,
     int& outputHeight,
@@ -3216,11 +4040,6 @@ bool loadImageTextureFromEpub(
 
     outputHeight =
         0;
-
-    debugLog(
-        "Opening EPUB image: %s",
-        imagePath.c_str()
-    );
 
     int zipError =
         0;
@@ -3303,16 +4122,6 @@ bool loadImageTextureFromEpub(
         return false;
     }
 
-    debugLog(
-        "IMG_Load_RW OK: %dx%d format=%s bpp=%d",
-        source->w,
-        source->h,
-        SDL_GetPixelFormatName(
-            source->format->format
-        ),
-        source->format->BitsPerPixel
-    );
-
     if (
         source->w <= 0 ||
         source->h <= 0
@@ -3328,16 +4137,166 @@ bool loadImageTextureFromEpub(
         return false;
     }
 
+    debugLog(
+        "IMG: %s source=%dx%d format=%s bpp=%d targetMax=%dx%d",
+        imagePath.c_str(),
+        source->w,
+        source->h,
+        SDL_GetPixelFormatName(
+            source->format->format
+        ),
+        source->format->BitsPerPixel,
+        maxWidth,
+        maxHeight
+    );
+
+    double scaleX =
+        static_cast<double>(
+            maxWidth
+        ) /
+        static_cast<double>(
+            source->w
+        );
+
+    double scaleY =
+        static_cast<double>(
+            maxHeight
+        ) /
+        static_cast<double>(
+            source->h
+        );
+
+    double scale =
+        std::min(
+            1.0,
+            std::min(
+                scaleX,
+                scaleY
+            )
+        );
+
+    int scaledWidth =
+        std::max(
+            1,
+            static_cast<int>(
+                source->w *
+                scale
+            )
+        );
+
+    int scaledHeight =
+        std::max(
+            1,
+            static_cast<int>(
+                source->h *
+                scale
+            )
+        );
+
+    SDL_Surface* finalSurface =
+        source;
+
+    SDL_Surface* converted =
+        nullptr;
+
+    SDL_Surface* scaled =
+        nullptr;
+
+    if (
+        scaledWidth != source->w ||
+        scaledHeight != source->h
+    )
+    {
+        converted =
+            SDL_ConvertSurfaceFormat(
+                source,
+                SDL_PIXELFORMAT_RGBA32,
+                0
+            );
+
+        if (
+            converted
+        )
+        {
+            scaled =
+                SDL_CreateRGBSurfaceWithFormat(
+                    0,
+                    scaledWidth,
+                    scaledHeight,
+                    32,
+                    SDL_PIXELFORMAT_RGBA32
+                );
+
+            if (
+                scaled &&
+                SDL_BlitScaled(
+                    converted,
+                    nullptr,
+                    scaled,
+                    nullptr
+                ) == 0
+            )
+            {
+                finalSurface =
+                    scaled;
+            }
+            else
+            {
+                if (
+                    scaled
+                )
+                {
+                    SDL_FreeSurface(
+                        scaled
+                    );
+
+                    scaled =
+                        nullptr;
+                }
+
+                debugLog(
+                    "Image pre-scale failed, falling back to source texture: %s",
+                    SDL_GetError()
+                );
+            }
+        }
+        else
+        {
+            debugLog(
+                "Image conversion failed, falling back to source texture: %s",
+                SDL_GetError()
+            );
+        }
+    }
+
     SDL_Texture* texture =
         SDL_CreateTextureFromSurface(
             app.renderer,
-            source
+            finalSurface
         );
 
     if (!texture)
     {
         error =
             SDL_GetError();
+
+        if (
+            scaled
+        )
+        {
+            SDL_FreeSurface(
+                scaled
+            );
+        }
+
+        if (
+            converted
+        )
+        {
+            SDL_FreeSurface(
+                converted
+            );
+        }
 
         SDL_FreeSurface(
             source
@@ -3346,20 +4305,174 @@ bool loadImageTextureFromEpub(
         return false;
     }
 
-    outputWidth =
-        source->w;
-
-    outputHeight =
-        source->h;
-
     outputTexture =
         texture;
+
+    outputWidth =
+        finalSurface->w;
+
+    outputHeight =
+        finalSurface->h;
+
+    if (
+        scaled
+    )
+    {
+        SDL_FreeSurface(
+            scaled
+        );
+    }
+
+    if (
+        converted
+    )
+    {
+        SDL_FreeSurface(
+            converted
+        );
+    }
 
     SDL_FreeSurface(
         source
     );
 
+    debugLog(
+        "IMG texture ready: %s = %dx%d",
+        imagePath.c_str(),
+        outputWidth,
+        outputHeight
+    );
+
     return true;
+}
+
+int imageAreaHeightForPage(
+    const DocumentPage& page)
+{
+    int captionHeight =
+        static_cast<int>(
+            page.captionLines.size()
+        ) * 16;
+
+    if (
+        !page.captionLines.empty()
+    )
+    {
+        captionHeight +=
+            8;
+    }
+
+    return
+        std::max(
+            80,
+            (
+                READER_BOTTOM -
+                43
+            ) -
+            captionHeight
+        );
+}
+
+void loadCurrentPageImage(
+    App& app)
+{
+    destroyReaderImage(
+        app
+    );
+
+    if (
+        app.readerPageIndex < 0 ||
+        app.readerPageIndex >=
+            static_cast<int>(
+                app.readerPages.size()
+            )
+    )
+    {
+        return;
+    }
+
+    const DocumentPage& page =
+        app.readerPages[
+            app.readerPageIndex
+        ];
+
+    if (
+        page.kind !=
+        PageKind::Image
+    )
+    {
+        return;
+    }
+
+    if (
+        app.currentBookIndex < 0 ||
+        app.currentBookIndex >=
+            static_cast<int>(
+                app.books.size()
+            )
+    )
+    {
+        app.readerImageError =
+            "Invalid book";
+
+        return;
+    }
+
+    int maxHeight =
+        imageAreaHeightForPage(
+            page
+        );
+
+    std::string error;
+
+    SDL_Texture* texture =
+        nullptr;
+
+    int width =
+        0;
+
+    int height =
+        0;
+
+    if (
+        !loadImageTextureFromEpub(
+            app,
+            app.books[
+                app.currentBookIndex
+            ],
+            page.imagePath,
+            TEXT_WIDTH,
+            maxHeight,
+            texture,
+            width,
+            height,
+            error
+        )
+    )
+    {
+        app.readerImageError =
+            error;
+
+        debugLog(
+            "Page image failed: %s -> %s",
+            page.imagePath.c_str(),
+            error.c_str()
+        );
+
+        return;
+    }
+
+    app.readerImageTexture =
+        texture;
+
+    app.readerImageWidth =
+        width;
+
+    app.readerImageHeight =
+        height;
+
+    app.readerLoadedImagePath =
+        page.imagePath;
 }
 
 void loadProgress(
@@ -3373,6 +4486,12 @@ void loadProgress(
 
     if (!file)
         return;
+
+    bool version2 =
+        false;
+
+    bool firstMeaningfulLine =
+        true;
 
     char buffer[1024];
 
@@ -3405,6 +4524,32 @@ void loadProgress(
             continue;
         }
 
+        if (
+            firstMeaningfulLine &&
+            line ==
+            "#LARP_PROGRESS_V2"
+        )
+        {
+            version2 =
+                true;
+
+            firstMeaningfulLine =
+                false;
+
+            continue;
+        }
+
+        firstMeaningfulLine =
+            false;
+
+        if (
+            !line.empty() &&
+            line[0] == '#'
+        )
+        {
+            continue;
+        }
+
         std::vector<std::string>
             fields;
 
@@ -3416,7 +4561,7 @@ void loadProgress(
             line.size()
         )
         {
-            const std::size_t tab =
+            std::size_t tab =
                 line.find(
                     '\t',
                     start
@@ -3461,38 +4606,45 @@ void loadProgress(
             fields.size() == 2
         )
         {
-            progress.chapterIndex =
+            progress.spineIndex =
                 0;
 
-            progress.topLine =
-                std::atoi(
-                    fields[1].c_str()
+            int oldTopLine =
+                std::max(
+                    0,
+                    std::atoi(
+                        fields[1].c_str()
+                    )
                 );
+
+            progress.pageIndex =
+                oldTopLine /
+                READER_VISIBLE_LINES;
         }
         else
         {
-            progress.chapterIndex =
-                std::atoi(
-                    fields[1].c_str()
+            progress.spineIndex =
+                std::max(
+                    0,
+                    std::atoi(
+                        fields[1].c_str()
+                    )
                 );
 
-            progress.topLine =
-                std::atoi(
-                    fields[2].c_str()
+            int rawPosition =
+                std::max(
+                    0,
+                    std::atoi(
+                        fields[2].c_str()
+                    )
                 );
+
+            progress.pageIndex =
+                version2
+                ? rawPosition
+                : rawPosition /
+                    READER_VISIBLE_LINES;
         }
-
-        progress.chapterIndex =
-            std::max(
-                0,
-                progress.chapterIndex
-            );
-
-        progress.topLine =
-            std::max(
-                0,
-                progress.topLine
-            );
 
         app.savedProgress[
             fields[0]
@@ -3517,6 +4669,11 @@ void saveProgress(
     if (!file)
         return;
 
+    std::fprintf(
+        file,
+        "#LARP_PROGRESS_V2\n"
+    );
+
     for (
         const auto& entry :
         app.savedProgress
@@ -3526,8 +4683,8 @@ void saveProgress(
             file,
             "%s\t%d\t%d\n",
             entry.first.c_str(),
-            entry.second.chapterIndex,
-            entry.second.topLine
+            entry.second.spineIndex,
+            entry.second.pageIndex
         );
     }
 
@@ -3541,7 +4698,7 @@ void rememberCurrentProgress(
 {
     if (
         app.readerBookFilename.empty() ||
-        app.readerChapterIndex < 0
+        app.readerSpineIndex < 0
     )
     {
         return;
@@ -3549,14 +4706,14 @@ void rememberCurrentProgress(
 
     ReadingProgress progress;
 
-    progress.chapterIndex =
-        app.readerChapterIndex;
+    progress.spineIndex =
+        app.readerSpineIndex;
 
-    progress.topLine =
-        app.readerContent ==
-            ReaderContent::Text
-        ? app.readerTopLine
-        : 0;
+    progress.pageIndex =
+        std::max(
+            0,
+            app.readerPageIndex
+        );
 
     app.savedProgress[
         app.readerBookFilename
@@ -3566,97 +4723,6 @@ void rememberCurrentProgress(
     saveProgress(
         app
     );
-}
-
-int maximumTopLine(
-    const App& app)
-{
-    return std::max(
-        0,
-        static_cast<int>(
-            app.readerLines.size()
-        )
-        - READER_VISIBLE_LINES
-    );
-}
-
-int totalPages(
-    const App& app)
-{
-    if (
-        app.readerLines.empty()
-    )
-    {
-        return 1;
-    }
-
-    return
-        (
-            static_cast<int>(
-                app.readerLines.size()
-            )
-            + READER_VISIBLE_LINES
-            - 1
-        )
-        /
-        READER_VISIBLE_LINES;
-}
-
-int currentPage(
-    const App& app)
-{
-    if (
-        app.readerLines.empty()
-    )
-    {
-        return 1;
-    }
-
-    return std::min(
-        (
-            app.readerTopLine
-            /
-            READER_VISIBLE_LINES
-        )
-        + 1,
-        totalPages(
-            app
-        )
-    );
-}
-
-void clampReaderPosition(
-    App& app)
-{
-    app.readerTopLine =
-        std::clamp(
-            app.readerTopLine,
-            0,
-            maximumTopLine(
-                app
-            )
-        );
-}
-
-std::string currentSectionTitle(
-    const App& app)
-{
-    if (
-        app.readerChapterIndex >= 0 &&
-        app.readerChapterIndex <
-            static_cast<int>(
-                app.readerSpine.size()
-            )
-    )
-    {
-        return
-            app.readerSpine[
-                app.readerChapterIndex
-            ].title;
-    }
-
-    return
-        app.readerTitle;
 }
 
 std::string makeTextCacheKey(
@@ -3696,7 +4762,7 @@ CachedText* getCachedText(
     const std::string& text,
     SDL_Color color)
 {
-    const std::string key =
+    std::string key =
         makeTextCacheKey(
             font,
             text,
@@ -3809,6 +4875,42 @@ void drawText(
     );
 }
 
+void drawCenteredText(
+    App& app,
+    TTF_Font* font,
+    const std::string& text,
+    int y,
+    SDL_Color color)
+{
+    if (
+        text.empty()
+    )
+    {
+        return;
+    }
+
+    int width =
+        textPixelWidth(
+            font,
+            text
+        );
+
+    drawText(
+        app,
+        font,
+        text,
+        std::max(
+            TEXT_LEFT,
+            (
+                SCREEN_WIDTH -
+                width
+            ) / 2
+        ),
+        y,
+        color
+    );
+}
+
 void clearTextCache(
     App& app)
 {
@@ -3828,6 +4930,100 @@ void clearTextCache(
     }
 
     app.textCache.clear();
+}
+
+int activeTocIndexForSpine(
+    const App& app,
+    int spineIndex)
+{
+    int active =
+        -1;
+
+    for (
+        std::size_t i = 0;
+        i < app.readerToc.size();
+        ++i
+    )
+    {
+        if (
+            app.readerToc[i].spineIndex <=
+            spineIndex
+        )
+        {
+            active =
+                static_cast<int>(
+                    i
+                );
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    return active;
+}
+
+std::string currentSectionTitle(
+    const App& app)
+{
+    if (
+        app.readerActiveTocIndex >= 0 &&
+        app.readerActiveTocIndex <
+            static_cast<int>(
+                app.readerToc.size()
+            )
+    )
+    {
+        const TocEntry& entry =
+            app.readerToc[
+                app.readerActiveTocIndex
+            ];
+
+        std::string lowerTitle =
+            toLower(
+                entry.title
+            );
+
+        bool coverLike =
+            lowerTitle.find(
+                "cover"
+            ) !=
+                std::string::npos ||
+            lowerTitle.find(
+                "cubierta"
+            ) !=
+                std::string::npos;
+
+        if (
+            !(
+                coverLike &&
+                app.readerSpineIndex >
+                    entry.spineIndex
+            )
+        )
+        {
+            return
+                entry.title;
+        }
+    }
+
+    if (
+        app.readerSpineIndex >= 0 &&
+        app.readerSpineIndex <
+            static_cast<int>(
+                app.readerSpine.size()
+            )
+    )
+    {
+        return
+            app.readerSpine[
+                app.readerSpineIndex
+            ].title;
+    }
+
+    return
+        app.readerTitle;
 }
 
 void loadingFailed(
@@ -3852,23 +5048,81 @@ void loadingFailed(
     );
 }
 
-void finishChapterSearchWithoutResult(
+void scheduleDocumentLoad(
+    App& app,
+    int spineIndex,
+    DocumentPosition position,
+    int restorePage,
+    int searchDirection,
+    Screen returnScreen)
+{
+    if (
+        spineIndex < 0 ||
+        spineIndex >=
+            static_cast<int>(
+                app.readerSpine.size()
+            )
+    )
+    {
+        return;
+    }
+
+    app.pendingSpineIndex =
+        spineIndex;
+
+    app.pendingPosition =
+        position;
+
+    app.pendingRestorePage =
+        restorePage;
+
+    app.pendingSearchDirection =
+        searchDirection >= 0
+        ? 1
+        : -1;
+
+    app.pendingDocument =
+        ChapterDocument{};
+
+    app.loadingStage =
+        LoadingStage::LoadDocument;
+
+    app.loadingReturnScreen =
+        returnScreen;
+
+    app.loadingMessage =
+        "Loading section...";
+
+    app.loadingDetail =
+        app.readerSpine[
+            spineIndex
+        ].title;
+
+    app.loadingWarmupFrames =
+        0;
+
+    app.screen =
+        Screen::Loading;
+
+    clearTextCache(
+        app
+    );
+}
+
+void finishSearchWithoutResult(
     App& app)
 {
     if (
         app.loadingReturnScreen ==
             Screen::Reader &&
-        (
-            !app.readerLines.empty() ||
-            app.readerImageTexture
-        ) &&
-        app.readerChapterIndex >= 0
+        !app.readerPages.empty() &&
+        app.readerSpineIndex >= 0
     )
     {
-        app.pendingChapter =
+        app.pendingDocument =
             ChapterDocument{};
 
-        app.pendingChapterIndex =
+        app.pendingSpineIndex =
             -1;
 
         app.loadingStage =
@@ -3893,94 +5147,18 @@ void finishChapterSearchWithoutResult(
     );
 }
 
-void scheduleChapterLoad(
-    App& app,
-    int chapterIndex,
-    ChapterPosition position,
-    int restoreTopLine,
-    int searchDirection,
-    Screen returnScreen)
-{
-    if (
-        chapterIndex < 0 ||
-        chapterIndex >=
-            static_cast<int>(
-                app.readerSpine.size()
-            )
-    )
-    {
-        return;
-    }
-
-    app.pendingChapterIndex =
-        chapterIndex;
-
-    app.pendingChapterPosition =
-        position;
-
-    app.pendingRestoreTopLine =
-        restoreTopLine;
-
-    app.pendingSearchDirection =
-        searchDirection >= 0
-        ? 1
-        : -1;
-
-    app.pendingChapter =
-        ChapterDocument{};
-
-    app.loadingStage =
-        LoadingStage::LoadChapter;
-
-    app.loadingReturnScreen =
-        returnScreen;
-
-    app.loadingMessage =
-        "Loading chapter...";
-
-    app.loadingDetail =
-        app.readerSpine[
-            chapterIndex
-        ].title;
-
-    app.loadingWarmupFrames =
-        0;
-
-    app.screen =
-        Screen::Loading;
-
-    clearTextCache(
-        app
-    );
-}
-
-void skipCurrentSpineItem(
+void skipPendingSpineItem(
     App& app,
     const std::string& reason)
 {
     debugLog(
         "Skipping spine item %d: %s",
-        app.pendingChapterIndex,
+        app.pendingSpineIndex + 1,
         reason.c_str()
     );
 
-    if (
-        app.pendingChapterIndex < 0 ||
-        app.pendingChapterIndex >=
-            static_cast<int>(
-                app.readerSpine.size()
-            )
-    )
-    {
-        finishChapterSearchWithoutResult(
-            app
-        );
-
-        return;
-    }
-
-    const int nextIndex =
-        app.pendingChapterIndex
+    int nextIndex =
+        app.pendingSpineIndex
         + app.pendingSearchDirection;
 
     if (
@@ -3991,22 +5169,19 @@ void skipCurrentSpineItem(
             )
     )
     {
-        finishChapterSearchWithoutResult(
+        finishSearchWithoutResult(
             app
         );
 
         return;
     }
 
-    const ChapterPosition nextPosition =
-        app.pendingSearchDirection > 0
-        ? ChapterPosition::Start
-        : ChapterPosition::End;
-
-    scheduleChapterLoad(
+    scheduleDocumentLoad(
         app,
         nextIndex,
-        nextPosition,
+        app.pendingSearchDirection > 0
+            ? DocumentPosition::Start
+            : DocumentPosition::End,
         0,
         app.pendingSearchDirection,
         app.loadingReturnScreen
@@ -4017,13 +5192,7 @@ void beginOpenSelectedBook(
     App& app)
 {
     if (
-        app.books.empty()
-    )
-    {
-        return;
-    }
-
-    if (
+        app.books.empty() ||
         app.selected < 0 ||
         app.selected >=
             static_cast<int>(
@@ -4039,32 +5208,39 @@ void beginOpenSelectedBook(
             app.selected
         ];
 
-    if (!book.valid)
+    if (
+        !book.valid
+    )
+    {
         return;
+    }
 
     destroyReaderImage(
         app
     );
 
-    app.pendingBookIndex =
+    clearTextCache(
+        app
+    );
+
+    app.currentBookIndex =
         app.selected;
 
     app.readerBookFilename.clear();
     app.readerTitle.clear();
-    app.readerSpine.clear();
 
-    app.readerChapterIndex =
+    app.readerSpine.clear();
+    app.readerToc.clear();
+    app.readerPages.clear();
+
+    app.readerSpineIndex =
         -1;
 
-    app.readerCurrentChapterPath.clear();
-
-    app.readerContent =
-        ReaderContent::None;
-
-    app.readerLines.clear();
-
-    app.readerTopLine =
+    app.readerPageIndex =
         0;
+
+    app.readerActiveTocIndex =
+        -1;
 
     app.tocSelected =
         0;
@@ -4079,83 +5255,92 @@ void beginOpenSelectedBook(
         "Opening EPUB...";
 
     app.loadingDetail =
-        "Reading book structure and table of contents";
+        "Reading spine and table of contents";
 
     app.loadingWarmupFrames =
         0;
 
     app.screen =
         Screen::Loading;
-
-    clearTextCache(
-        app
-    );
 }
 
-void finishTextChapter(
+void finishDocument(
     App& app,
-    std::vector<std::string>&& lines)
+    std::vector<DocumentPage>&& pages)
 {
-    destroyReaderImage(
-        app
-    );
-
-    app.readerContent =
-        ReaderContent::Text;
-
-    app.readerLines =
-        std::move(
-            lines
-        );
-
-    app.readerChapterIndex =
-        app.pendingChapterIndex;
-
-    app.readerCurrentChapterPath =
-        app.pendingChapter.path;
-
-    switch (
-        app.pendingChapterPosition
+    if (
+        pages.empty()
     )
     {
-        case ChapterPosition::Start:
+        skipPendingSpineItem(
+            app,
+            "Document produced no pages"
+        );
+
+        return;
+    }
+
+    app.readerPages =
+        std::move(
+            pages
+        );
+
+    app.readerSpineIndex =
+        app.pendingSpineIndex;
+
+    app.readerActiveTocIndex =
+        activeTocIndexForSpine(
+            app,
+            app.readerSpineIndex
+        );
+
+    switch (
+        app.pendingPosition
+    )
+    {
+        case DocumentPosition::Start:
         {
-            app.readerTopLine =
+            app.readerPageIndex =
                 0;
 
             break;
         }
 
-        case ChapterPosition::End:
+        case DocumentPosition::End:
         {
-            app.readerTopLine =
-                maximumTopLine(
-                    app
-                );
+            app.readerPageIndex =
+                static_cast<int>(
+                    app.readerPages.size()
+                )
+                - 1;
 
             break;
         }
 
-        case ChapterPosition::Restore:
+        case DocumentPosition::Restore:
         {
-            app.readerTopLine =
-                app.pendingRestoreTopLine;
-
-            clampReaderPosition(
-                app
-            );
+            app.readerPageIndex =
+                std::clamp(
+                    app.pendingRestorePage,
+                    0,
+                    static_cast<int>(
+                        app.readerPages.size()
+                    ) - 1
+                );
 
             break;
         }
     }
 
     app.tocSelected =
-        app.readerChapterIndex;
+        app.readerActiveTocIndex >= 0
+        ? app.readerActiveTocIndex
+        : 0;
 
-    app.pendingChapter =
+    app.pendingDocument =
         ChapterDocument{};
 
-    app.pendingChapterIndex =
+    app.pendingSpineIndex =
         -1;
 
     app.loadingStage =
@@ -4170,61 +5355,20 @@ void finishTextChapter(
     clearTextCache(
         app
     );
-}
 
-void finishImageChapter(
-    App& app,
-    SDL_Texture* texture,
-    int width,
-    int height)
-{
-    destroyReaderImage(
+    loadCurrentPageImage(
         app
     );
 
-    app.readerImageTexture =
-        texture;
-
-    app.readerImageWidth =
-        width;
-
-    app.readerImageHeight =
-        height;
-
-    app.readerContent =
-        ReaderContent::Image;
-
-    app.readerLines.clear();
-
-    app.readerTopLine =
-        0;
-
-    app.readerChapterIndex =
-        app.pendingChapterIndex;
-
-    app.readerCurrentChapterPath =
-        app.pendingChapter.path;
-
-    app.tocSelected =
-        app.readerChapterIndex;
-
-    app.pendingChapter =
-        ChapterDocument{};
-
-    app.pendingChapterIndex =
-        -1;
-
-    app.loadingStage =
-        LoadingStage::None;
-
-    app.loadingMessage.clear();
-    app.loadingDetail.clear();
-
-    app.screen =
-        Screen::Reader;
-
-    clearTextCache(
-        app
+    debugLog(
+        "DISPLAY: spine=%d/%zu page=%d/%zu title=%s",
+        app.readerSpineIndex + 1,
+        app.readerSpine.size(),
+        app.readerPageIndex + 1,
+        app.readerPages.size(),
+        currentSectionTitle(
+            app
+        ).c_str()
     );
 }
 
@@ -4233,15 +5377,9 @@ void processLoadingStage(
 {
     if (
         app.screen !=
-        Screen::Loading
-    )
-    {
-        return;
-    }
-
-    if (
+            Screen::Loading ||
         app.loadingStage ==
-        LoadingStage::Error
+            LoadingStage::Error
     )
     {
         return;
@@ -4263,8 +5401,8 @@ void processLoadingStage(
     )
     {
         if (
-            app.pendingBookIndex < 0 ||
-            app.pendingBookIndex >=
+            app.currentBookIndex < 0 ||
+            app.currentBookIndex >=
                 static_cast<int>(
                     app.books.size()
                 )
@@ -4280,7 +5418,7 @@ void processLoadingStage(
 
         const Book& book =
             app.books[
-                app.pendingBookIndex
+                app.currentBookIndex
             ];
 
         ReaderStructure structure =
@@ -4311,6 +5449,11 @@ void processLoadingStage(
                 structure.spine
             );
 
+        app.readerToc =
+            std::move(
+                structure.toc
+            );
+
         ReadingProgress progress;
 
         auto saved =
@@ -4327,20 +5470,20 @@ void processLoadingStage(
                 saved->second;
         }
 
-        progress.chapterIndex =
+        progress.spineIndex =
             std::clamp(
-                progress.chapterIndex,
+                progress.spineIndex,
                 0,
                 static_cast<int>(
                     app.readerSpine.size()
                 ) - 1
             );
 
-        scheduleChapterLoad(
+        scheduleDocumentLoad(
             app,
-            progress.chapterIndex,
-            ChapterPosition::Restore,
-            progress.topLine,
+            progress.spineIndex,
+            DocumentPosition::Restore,
+            progress.pageIndex,
             1,
             Screen::Library
         );
@@ -4350,12 +5493,12 @@ void processLoadingStage(
 
     if (
         app.loadingStage ==
-        LoadingStage::LoadChapter
+        LoadingStage::LoadDocument
     )
     {
         if (
-            app.pendingBookIndex < 0 ||
-            app.pendingBookIndex >=
+            app.currentBookIndex < 0 ||
+            app.currentBookIndex >=
                 static_cast<int>(
                     app.books.size()
                 )
@@ -4370,8 +5513,8 @@ void processLoadingStage(
         }
 
         if (
-            app.pendingChapterIndex < 0 ||
-            app.pendingChapterIndex >=
+            app.pendingSpineIndex < 0 ||
+            app.pendingSpineIndex >=
                 static_cast<int>(
                     app.readerSpine.size()
                 )
@@ -4379,7 +5522,7 @@ void processLoadingStage(
         {
             loadingFailed(
                 app,
-                "Invalid chapter index"
+                "Invalid spine index"
             );
 
             return;
@@ -4387,31 +5530,28 @@ void processLoadingStage(
 
         const Book& book =
             app.books[
-                app.pendingBookIndex
+                app.currentBookIndex
             ];
 
-        const std::string& chapterPath =
-            app.readerSpine[
-                app.pendingChapterIndex
-            ].path;
-
-        ChapterDocument chapter =
+        ChapterDocument document =
             loadChapterDocument(
                 book,
-                chapterPath
+                app.readerSpine[
+                    app.pendingSpineIndex
+                ].path
             );
 
         if (
-            !chapter.valid
+            !document.valid
         )
         {
             if (
-                chapter.skippable
+                document.skippable
             )
             {
-                skipCurrentSpineItem(
+                skipPendingSpineItem(
                     app,
-                    chapter.error
+                    document.error
                 );
 
                 return;
@@ -4419,169 +5559,56 @@ void processLoadingStage(
 
             loadingFailed(
                 app,
-                chapter.error
+                document.error
             );
 
             return;
         }
 
-        app.pendingChapter =
+        app.pendingDocument =
             std::move(
-                chapter
+                document
             );
 
-        if (
-            app.pendingChapter.kind ==
-            ChapterKind::Text
-        )
-        {
-            app.loadingStage =
-                LoadingStage::LayoutText;
+        app.loadingStage =
+            LoadingStage::LayoutDocument;
 
-            app.loadingMessage =
-                "Preparing pages...";
+        app.loadingMessage =
+            "Preparing pages...";
 
-            app.loadingDetail =
-                app.readerSpine[
-                    app.pendingChapterIndex
-                ].title;
+        app.loadingDetail =
+            app.readerSpine[
+                app.pendingSpineIndex
+            ].title;
 
-            app.loadingWarmupFrames =
-                0;
-
-            return;
-        }
-
-        if (
-            app.pendingChapter.kind ==
-            ChapterKind::Image
-        )
-        {
-            app.loadingStage =
-                LoadingStage::PrepareImage;
-
-            app.loadingMessage =
-                "Loading cover...";
-
-            app.loadingDetail =
-                app.readerSpine[
-                    app.pendingChapterIndex
-                ].title;
-
-            app.loadingWarmupFrames =
-                0;
-
-            return;
-        }
-
-        skipCurrentSpineItem(
-            app,
-            "Unsupported content"
-        );
+        app.loadingWarmupFrames =
+            0;
 
         return;
     }
 
     if (
         app.loadingStage ==
-        LoadingStage::LayoutText
+        LoadingStage::LayoutDocument
     )
     {
-        std::vector<std::string> lines =
-            wrapTextFast(
+        std::vector<DocumentPage> pages =
+            layoutDocument(
                 app.fontReader,
-                app.pendingChapter.text,
-                436
+                app.pendingDocument
             );
 
-        if (
-            lines.empty()
-        )
-        {
-            skipCurrentSpineItem(
-                app,
-                "Chapter produced no visible lines"
-            );
-
-            return;
-        }
-
-        finishTextChapter(
-            app,
-            std::move(
-                lines
-            )
+        debugLog(
+            "LAYOUT: %s -> %zu pages",
+            app.pendingDocument.path.c_str(),
+            pages.size()
         );
 
-        return;
-    }
-
-    if (
-        app.loadingStage ==
-        LoadingStage::PrepareImage
-    )
-    {
-        if (
-            app.pendingBookIndex < 0 ||
-            app.pendingBookIndex >=
-                static_cast<int>(
-                    app.books.size()
-                )
-        )
-        {
-            loadingFailed(
-                app,
-                "Invalid book index"
-            );
-
-            return;
-        }
-
-        const Book& book =
-            app.books[
-                app.pendingBookIndex
-            ];
-
-        SDL_Texture* texture =
-            nullptr;
-
-        int width =
-            0;
-
-        int height =
-            0;
-
-        std::string error;
-
-        const bool loaded =
-            loadImageTextureFromEpub(
-                app,
-                book,
-                app.pendingChapter.imagePath,
-                texture,
-                width,
-                height,
-                error
-            );
-
-        if (
-            !loaded
-        )
-        {
-            skipCurrentSpineItem(
-                app,
-                "Could not display image: "
-                    + error
-            );
-
-            return;
-        }
-
-        finishImageChapter(
+        finishDocument(
             app,
-            texture,
-            width,
-            height
+            std::move(
+                pages
+            )
         );
     }
 }
@@ -4597,38 +5624,271 @@ void closeReader(
         app
     );
 
+    clearTextCache(
+        app
+    );
+
     app.screen =
         Screen::Library;
+
+    app.currentBookIndex =
+        -1;
 
     app.readerBookFilename.clear();
     app.readerTitle.clear();
 
     app.readerSpine.clear();
+    app.readerToc.clear();
+    app.readerPages.clear();
 
-    app.readerChapterIndex =
+    app.readerSpineIndex =
         -1;
 
-    app.readerCurrentChapterPath.clear();
-
-    app.readerContent =
-        ReaderContent::None;
-
-    app.readerLines.clear();
-
-    app.readerTopLine =
+    app.readerPageIndex =
         0;
+
+    app.readerActiveTocIndex =
+        -1;
 
     app.tocSelected =
         0;
 
-    app.pendingBookIndex =
+    app.pendingSpineIndex =
         -1;
 
-    app.pendingChapterIndex =
-        -1;
-
-    app.pendingChapter =
+    app.pendingDocument =
         ChapterDocument{};
+}
+
+void navigateToAdjacentDocument(
+    App& app,
+    int direction)
+{
+    int target =
+        app.readerSpineIndex
+        + direction;
+
+    if (
+        target < 0 ||
+        target >=
+            static_cast<int>(
+                app.readerSpine.size()
+            )
+    )
+    {
+        return;
+    }
+
+    rememberCurrentProgress(
+        app
+    );
+
+    scheduleDocumentLoad(
+        app,
+        target,
+        direction > 0
+            ? DocumentPosition::Start
+            : DocumentPosition::End,
+        0,
+        direction,
+        Screen::Reader
+    );
+}
+
+void setReaderPage(
+    App& app,
+    int newPage)
+{
+    if (
+        newPage < 0 ||
+        newPage >=
+            static_cast<int>(
+                app.readerPages.size()
+            )
+    )
+    {
+        return;
+    }
+
+    app.readerPageIndex =
+        newPage;
+
+    clearTextCache(
+        app
+    );
+
+    loadCurrentPageImage(
+        app
+    );
+}
+
+void moveReaderByPage(
+    App& app,
+    int direction)
+{
+    if (
+        app.readerPages.empty()
+    )
+    {
+        return;
+    }
+
+    int target =
+        app.readerPageIndex
+        + direction;
+
+    if (
+        target >= 0 &&
+        target <
+            static_cast<int>(
+                app.readerPages.size()
+            )
+    )
+    {
+        setReaderPage(
+            app,
+            target
+        );
+
+        rememberCurrentProgress(
+            app
+        );
+
+        return;
+    }
+
+    navigateToAdjacentDocument(
+        app,
+        direction
+    );
+}
+
+void openToc(
+    App& app)
+{
+    if (
+        app.readerToc.empty()
+    )
+    {
+        return;
+    }
+
+    app.readerActiveTocIndex =
+        activeTocIndexForSpine(
+            app,
+            app.readerSpineIndex
+        );
+
+    app.tocSelected =
+        app.readerActiveTocIndex >= 0
+        ? app.readerActiveTocIndex
+        : 0;
+
+    app.screen =
+        Screen::Toc;
+
+    clearTextCache(
+        app
+    );
+}
+
+void closeToc(
+    App& app)
+{
+    app.screen =
+        Screen::Reader;
+
+    clearTextCache(
+        app
+    );
+}
+
+void jumpToTocSelection(
+    App& app)
+{
+    if (
+        app.tocSelected < 0 ||
+        app.tocSelected >=
+            static_cast<int>(
+                app.readerToc.size()
+            )
+    )
+    {
+        return;
+    }
+
+    const TocEntry& target =
+        app.readerToc[
+            app.tocSelected
+        ];
+
+    if (
+        target.spineIndex < 0
+    )
+    {
+        return;
+    }
+
+    rememberCurrentProgress(
+        app
+    );
+
+    int direction =
+        target.spineIndex <
+            app.readerSpineIndex
+        ? -1
+        : 1;
+
+    if (
+        !target.fragment.empty()
+    )
+    {
+        debugLog(
+            "TOC fragment preserved but not positioned yet: %s#%s",
+            target.path.c_str(),
+            target.fragment.c_str()
+        );
+    }
+
+    scheduleDocumentLoad(
+        app,
+        target.spineIndex,
+        DocumentPosition::Start,
+        0,
+        direction,
+        Screen::Reader
+    );
+}
+
+void cancelLoading(
+    App& app)
+{
+    app.loadingStage =
+        LoadingStage::None;
+
+    app.loadingMessage.clear();
+    app.loadingDetail.clear();
+
+    app.pendingDocument =
+        ChapterDocument{};
+
+    app.pendingSpineIndex =
+        -1;
+
+    if (
+        app.loadingReturnScreen ==
+            Screen::Reader &&
+        !app.readerPages.empty()
+    )
+    {
+        app.screen =
+            Screen::Reader;
+    }
+    else
+    {
+        app.screen =
+            Screen::Library;
+    }
 
     clearTextCache(
         app
@@ -4654,33 +5914,20 @@ bool initialize(
         "SDL initialized"
     );
 
-    const int requestedImageFlags =
+    int imageFlags =
         IMG_INIT_PNG |
         IMG_INIT_JPG;
 
-    const int initializedImageFlags =
+    int initializedImageFlags =
         IMG_Init(
-            requestedImageFlags
+            imageFlags
         );
 
     debugLog(
         "IMG_Init requested=%d result=%d",
-        requestedImageFlags,
+        imageFlags,
         initializedImageFlags
     );
-
-    if (
-        (
-            initializedImageFlags &
-            IMG_INIT_PNG
-        ) == 0
-    )
-    {
-        debugLog(
-            "WARNING: PNG codec unavailable: %s",
-            IMG_GetError()
-        );
-    }
 
     if (
         TTF_Init() != 0
@@ -4705,14 +5952,7 @@ bool initialize(
         );
 
     if (!app.window)
-    {
-        debugLog(
-            "SDL_CreateWindow failed: %s",
-            SDL_GetError()
-        );
-
         return false;
-    }
 
     app.renderer =
         SDL_CreateRenderer(
@@ -4722,14 +5962,7 @@ bool initialize(
         );
 
     if (!app.renderer)
-    {
-        debugLog(
-            "SDL_CreateRenderer failed: %s",
-            SDL_GetError()
-        );
-
         return false;
-    }
 
     SDL_RenderSetLogicalSize(
         app.renderer,
@@ -4809,277 +6042,6 @@ bool initialize(
     return true;
 }
 
-void navigateToAdjacentChapter(
-    App& app,
-    int direction)
-{
-    const int targetChapter =
-        app.readerChapterIndex
-        + direction;
-
-    if (
-        targetChapter < 0 ||
-        targetChapter >=
-            static_cast<int>(
-                app.readerSpine.size()
-            )
-    )
-    {
-        return;
-    }
-
-    rememberCurrentProgress(
-        app
-    );
-
-    scheduleChapterLoad(
-        app,
-        targetChapter,
-        direction > 0
-            ? ChapterPosition::Start
-            : ChapterPosition::End,
-        0,
-        direction,
-        Screen::Reader
-    );
-}
-
-void moveReaderByLines(
-    App& app,
-    int delta)
-{
-    if (
-        app.readerContent !=
-        ReaderContent::Text
-    )
-    {
-        return;
-    }
-
-    if (
-        delta > 0 &&
-        app.readerTopLine >=
-            maximumTopLine(
-                app
-            )
-    )
-    {
-        navigateToAdjacentChapter(
-            app,
-            1
-        );
-
-        return;
-    }
-
-    if (
-        delta < 0 &&
-        app.readerTopLine <= 0
-    )
-    {
-        navigateToAdjacentChapter(
-            app,
-            -1
-        );
-
-        return;
-    }
-
-    app.readerTopLine +=
-        delta;
-
-    clampReaderPosition(
-        app
-    );
-
-    clearTextCache(
-        app
-    );
-}
-
-void moveReaderByPage(
-    App& app,
-    int direction)
-{
-    if (
-        app.readerContent ==
-        ReaderContent::Image
-    )
-    {
-        navigateToAdjacentChapter(
-            app,
-            direction
-        );
-
-        return;
-    }
-
-    if (
-        app.readerContent !=
-        ReaderContent::Text
-    )
-    {
-        return;
-    }
-
-    if (
-        direction > 0
-    )
-    {
-        const int maxTop =
-            maximumTopLine(
-                app
-            );
-
-        if (
-            app.readerTopLine <
-            maxTop
-        )
-        {
-            app.readerTopLine =
-                std::min(
-                    app.readerTopLine
-                        + READER_VISIBLE_LINES,
-                    maxTop
-                );
-
-            clearTextCache(
-                app
-            );
-
-            return;
-        }
-
-        navigateToAdjacentChapter(
-            app,
-            1
-        );
-
-        return;
-    }
-
-    if (
-        app.readerTopLine > 0
-    )
-    {
-        app.readerTopLine =
-            std::max(
-                0,
-                app.readerTopLine
-                    - READER_VISIBLE_LINES
-            );
-
-        clearTextCache(
-            app
-        );
-
-        return;
-    }
-
-    navigateToAdjacentChapter(
-        app,
-        -1
-    );
-}
-
-void openToc(
-    App& app)
-{
-    if (
-        app.readerSpine.empty()
-    )
-    {
-        return;
-    }
-
-    app.tocSelected =
-        std::clamp(
-            app.readerChapterIndex,
-            0,
-            static_cast<int>(
-                app.readerSpine.size()
-            ) - 1
-        );
-
-    app.screen =
-        Screen::Toc;
-
-    clearTextCache(
-        app
-    );
-
-    debugLog(
-        "TOC opened at item %d",
-        app.tocSelected + 1
-    );
-}
-
-void closeToc(
-    App& app)
-{
-    app.screen =
-        Screen::Reader;
-
-    clearTextCache(
-        app
-    );
-}
-
-void jumpToTocSelection(
-    App& app)
-{
-    if (
-        app.tocSelected < 0 ||
-        app.tocSelected >=
-            static_cast<int>(
-                app.readerSpine.size()
-            )
-    )
-    {
-        return;
-    }
-
-    if (
-        app.tocSelected ==
-        app.readerChapterIndex
-    )
-    {
-        closeToc(
-            app
-        );
-
-        return;
-    }
-
-    rememberCurrentProgress(
-        app
-    );
-
-    const int direction =
-        app.tocSelected >
-        app.readerChapterIndex
-        ? 1
-        : -1;
-
-    debugLog(
-        "TOC jump: %d -> %d (%s)",
-        app.readerChapterIndex + 1,
-        app.tocSelected + 1,
-        app.readerSpine[
-            app.tocSelected
-        ].title.c_str()
-    );
-
-    scheduleChapterLoad(
-        app,
-        app.tocSelected,
-        ChapterPosition::Start,
-        0,
-        direction,
-        Screen::Reader
-    );
-}
-
 void handleLibraryButton(
     App& app,
     Uint8 button)
@@ -5156,44 +6118,6 @@ void handleLibraryButton(
     }
 }
 
-void cancelLoading(
-    App& app)
-{
-    app.loadingStage =
-        LoadingStage::None;
-
-    app.loadingMessage.clear();
-    app.loadingDetail.clear();
-
-    app.pendingChapter =
-        ChapterDocument{};
-
-    app.pendingChapterIndex =
-        -1;
-
-    if (
-        app.loadingReturnScreen ==
-            Screen::Reader &&
-        (
-            !app.readerLines.empty() ||
-            app.readerImageTexture
-        )
-    )
-    {
-        app.screen =
-            Screen::Reader;
-    }
-    else
-    {
-        app.screen =
-            Screen::Library;
-    }
-
-    clearTextCache(
-        app
-    );
-}
-
 void handleLoadingButton(
     App& app,
     Uint8 button)
@@ -5206,24 +6130,15 @@ void handleLoadingButton(
         cancelLoading(
             app
         );
-
-        return;
     }
-
-    if (
+    else if (
         button ==
         SDL_CONTROLLER_BUTTON_START
     )
     {
-        if (
-            !app.readerBookFilename.empty() &&
-            app.readerChapterIndex >= 0
-        )
-        {
-            rememberCurrentProgress(
-                app
-            );
-        }
+        rememberCurrentProgress(
+            app
+        );
 
         app.running =
             false;
@@ -5238,26 +6153,6 @@ void handleReaderButton(
         button
     )
     {
-        case SDL_CONTROLLER_BUTTON_DPAD_UP:
-        {
-            moveReaderByLines(
-                app,
-                -1
-            );
-
-            break;
-        }
-
-        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-        {
-            moveReaderByLines(
-                app,
-                1
-            );
-
-            break;
-        }
-
         case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
         {
             moveReaderByPage(
@@ -5269,6 +6164,26 @@ void handleReaderButton(
         }
 
         case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+        {
+            moveReaderByPage(
+                app,
+                1
+            );
+
+            break;
+        }
+
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+        {
+            moveReaderByPage(
+                app,
+                -1
+            );
+
+            break;
+        }
+
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
         {
             moveReaderByPage(
                 app,
@@ -5324,23 +6239,21 @@ void handleTocButton(
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
         {
             if (
-                app.readerSpine.empty()
+                !app.readerToc.empty()
             )
             {
-                break;
-            }
+                --app.tocSelected;
 
-            --app.tocSelected;
-
-            if (
-                app.tocSelected < 0
-            )
-            {
-                app.tocSelected =
-                    static_cast<int>(
-                        app.readerSpine.size()
-                    )
-                    - 1;
+                if (
+                    app.tocSelected < 0
+                )
+                {
+                    app.tocSelected =
+                        static_cast<int>(
+                            app.readerToc.size()
+                        )
+                        - 1;
+                }
             }
 
             break;
@@ -5349,23 +6262,21 @@ void handleTocButton(
         case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
         {
             if (
-                app.readerSpine.empty()
+                !app.readerToc.empty()
             )
             {
-                break;
-            }
+                ++app.tocSelected;
 
-            ++app.tocSelected;
-
-            if (
-                app.tocSelected >=
-                static_cast<int>(
-                    app.readerSpine.size()
+                if (
+                    app.tocSelected >=
+                    static_cast<int>(
+                        app.readerToc.size()
+                    )
                 )
-            )
-            {
-                app.tocSelected =
-                    0;
+                {
+                    app.tocSelected =
+                        0;
+                }
             }
 
             break;
@@ -5423,15 +6334,9 @@ void handleInput(
             SDL_QUIT
         )
         {
-            if (
-                !app.readerBookFilename.empty() &&
-                app.readerChapterIndex >= 0
-            )
-            {
-                rememberCurrentProgress(
-                    app
-                );
-            }
+            rememberCurrentProgress(
+                app
+            );
 
             app.running =
                 false;
@@ -5515,23 +6420,53 @@ void handleInput(
 void renderLibrary(
     App& app)
 {
-    const SDL_Color background =
-        {18, 19, 20, 255};
+    const SDL_Color background
+    {
+        18,
+        19,
+        20,
+        255
+    };
 
-    const SDL_Color panel =
-        {31, 33, 35, 255};
+    const SDL_Color panel
+    {
+        31,
+        33,
+        35,
+        255
+    };
 
-    const SDL_Color text =
-        {235, 235, 230, 255};
+    const SDL_Color text
+    {
+        235,
+        235,
+        230,
+        255
+    };
 
-    const SDL_Color muted =
-        {150, 150, 145, 255};
+    const SDL_Color muted
+    {
+        150,
+        150,
+        145,
+        255
+    };
 
-    const SDL_Color selectedText =
-        {255, 255, 240, 255};
+    const SDL_Color selectedText
+    {
+        255,
+        255,
+        240,
+        255
+    };
 
-    const SDL_Color errorText =
-        {210, 130, 130, 255};
+    const SDL_Color errorText
+    {
+        210,
+        130,
+        130,
+        255
+    };
 
     SDL_SetRenderDrawColor(
         app.renderer,
@@ -5618,18 +6553,12 @@ void renderLibrary(
             4;
 
         int firstBook =
-            0;
-
-        if (
             app.selected >=
-            visibleBooks
-        )
-        {
-            firstBook =
-                app.selected
+                visibleBooks
+            ? app.selected
                 - visibleBooks
-                + 1;
-        }
+                + 1
+            : 0;
 
         for (
             int row = 0;
@@ -5637,7 +6566,7 @@ void renderLibrary(
             ++row
         )
         {
-            const int index =
+            int index =
                 firstBook
                 + row;
 
@@ -5651,7 +6580,7 @@ void renderLibrary(
                 break;
             }
 
-            const int y =
+            int y =
                 firstY
                 + row
                 * rowHeight;
@@ -5661,7 +6590,7 @@ void renderLibrary(
                     index
                 ];
 
-            const bool isSelected =
+            bool isSelected =
                 index ==
                 app.selected;
 
@@ -5693,25 +6622,29 @@ void renderLibrary(
 
             const std::string& title =
                 book.valid
-                    ? book.title
-                    : book.filename;
+                ? book.title
+                : book.filename;
 
-            const std::string subtitle =
+            std::string subtitle =
                 book.valid
-                    ? book.author
-                    : book.error;
+                ? book.author
+                : book.error;
 
             drawText(
                 app,
                 app.fontNormal,
-                title,
+                fitTextToWidth(
+                    app.fontNormal,
+                    title,
+                    430
+                ),
                 22,
                 y,
                 book.valid
                     ? (
                         isSelected
-                            ? selectedText
-                            : text
+                        ? selectedText
+                        : text
                     )
                     : errorText
             );
@@ -5719,7 +6652,11 @@ void renderLibrary(
             drawText(
                 app,
                 app.fontSmall,
-                subtitle,
+                fitTextToWidth(
+                    app.fontSmall,
+                    subtitle,
+                    430
+                ),
                 22,
                 y + 21,
                 book.valid
@@ -5755,20 +6692,45 @@ void renderLibrary(
 void renderLoading(
     App& app)
 {
-    const SDL_Color background =
-        {18, 19, 20, 255};
+    const SDL_Color background
+    {
+        18,
+        19,
+        20,
+        255
+    };
 
-    const SDL_Color panel =
-        {31, 33, 35, 255};
+    const SDL_Color panel
+    {
+        31,
+        33,
+        35,
+        255
+    };
 
-    const SDL_Color text =
-        {235, 235, 230, 255};
+    const SDL_Color text
+    {
+        235,
+        235,
+        230,
+        255
+    };
 
-    const SDL_Color muted =
-        {150, 150, 145, 255};
+    const SDL_Color muted
+    {
+        150,
+        150,
+        145,
+        255
+    };
 
-    const SDL_Color error =
-        {220, 140, 140, 255};
+    const SDL_Color error
+    {
+        220,
+        140,
+        140,
+        255
+    };
 
     SDL_SetRenderDrawColor(
         app.renderer,
@@ -5817,8 +6779,8 @@ void renderLoading(
 
     if (
         bookTitle.empty() &&
-        app.pendingBookIndex >= 0 &&
-        app.pendingBookIndex <
+        app.currentBookIndex >= 0 &&
+        app.currentBookIndex <
             static_cast<int>(
                 app.books.size()
             )
@@ -5826,20 +6788,24 @@ void renderLoading(
     {
         bookTitle =
             app.books[
-                app.pendingBookIndex
+                app.currentBookIndex
             ].title;
     }
 
     drawText(
         app,
         app.fontSmall,
-        bookTitle,
+        fitTextToWidth(
+            app.fontSmall,
+            bookTitle,
+            430
+        ),
         24,
         78,
         muted
     );
 
-    const bool isError =
+    bool isError =
         app.loadingStage ==
         LoadingStage::Error;
 
@@ -5888,17 +6854,45 @@ void renderLoading(
 void renderReader(
     App& app)
 {
-    const SDL_Color background =
-        {244, 239, 225, 255};
+    const SDL_Color background
+    {
+        244,
+        239,
+        225,
+        255
+    };
 
-    const SDL_Color header =
-        {224, 218, 201, 255};
+    const SDL_Color header
+    {
+        224,
+        218,
+        201,
+        255
+    };
 
-    const SDL_Color text =
-        {36, 34, 30, 255};
+    const SDL_Color text
+    {
+        36,
+        34,
+        30,
+        255
+    };
 
-    const SDL_Color muted =
-        {100, 95, 85, 255};
+    const SDL_Color muted
+    {
+        100,
+        95,
+        85,
+        255
+    };
+
+    const SDL_Color error
+    {
+        150,
+        70,
+        70,
+        255
+    };
 
     SDL_SetRenderDrawColor(
         app.renderer,
@@ -5933,45 +6927,64 @@ void renderReader(
         &headerRect
     );
 
-    const std::string chapterIndicator =
-        std::to_string(
-            app.readerChapterIndex + 1
-        )
-        + "/"
-        + std::to_string(
-            app.readerSpine.size()
-        );
+    std::string logicalIndicator;
 
-    const int indicatorWidth =
+    if (
+        app.readerActiveTocIndex >= 0 &&
+        app.readerActiveTocIndex <
+            static_cast<int>(
+                app.readerToc.size()
+            )
+    )
+    {
+        logicalIndicator =
+            std::to_string(
+                app.readerActiveTocIndex + 1
+            )
+            + "/"
+            + std::to_string(
+                app.readerToc.size()
+            );
+    }
+    else
+    {
+        logicalIndicator =
+            std::to_string(
+                app.readerSpineIndex + 1
+            )
+            + "/"
+            + std::to_string(
+                app.readerSpine.size()
+            );
+    }
+
+    int indicatorWidth =
         textPixelWidth(
             app.fontSmall,
-            chapterIndicator
+            logicalIndicator
         );
 
-    const int indicatorX =
+    int indicatorX =
         SCREEN_WIDTH
         - 16
         - indicatorWidth;
 
-    const int titleMaxWidth =
+    int titleMaxWidth =
         std::max(
             40,
             indicatorX - 28
         );
 
-    const std::string headerTitle =
+    drawText(
+        app,
+        app.fontSmall,
         fitTextToWidth(
             app.fontSmall,
             currentSectionTitle(
                 app
             ),
             titleMaxWidth
-        );
-
-    drawText(
-        app,
-        app.fontSmall,
-        headerTitle,
+        ),
         16,
         10,
         text
@@ -5980,185 +6993,185 @@ void renderReader(
     drawText(
         app,
         app.fontSmall,
-        chapterIndicator,
+        logicalIndicator,
         indicatorX,
         10,
         muted
     );
 
     if (
-        app.readerContent ==
-            ReaderContent::Image &&
-        app.readerImageTexture
+        app.readerPageIndex >= 0 &&
+        app.readerPageIndex <
+            static_cast<int>(
+                app.readerPages.size()
+            )
     )
     {
-        const double scaleX =
-            static_cast<double>(
-                COVER_AREA_WIDTH
-            )
-            /
-            static_cast<double>(
-                app.readerImageWidth
-            );
+        const DocumentPage& page =
+            app.readerPages[
+                app.readerPageIndex
+            ];
 
-        const double scaleY =
-            static_cast<double>(
-                COVER_AREA_HEIGHT
-            )
-            /
-            static_cast<double>(
-                app.readerImageHeight
-            );
-
-        double scale =
-            std::min(
-                scaleX,
-                scaleY
-            );
-
-        scale =
-            std::min(
-                1.0,
-                scale
-            );
-
-        const int drawWidth =
-            std::max(
-                1,
-                static_cast<int>(
-                    app.readerImageWidth
-                    * scale
-                )
-            );
-
-        const int drawHeight =
-            std::max(
-                1,
-                static_cast<int>(
-                    app.readerImageHeight
-                    * scale
-                )
-            );
-
-        SDL_Rect destination
-        {
-            22
-                + (
-                    COVER_AREA_WIDTH
-                    - drawWidth
-                ) / 2,
-
-            42
-                + (
-                    COVER_AREA_HEIGHT
-                    - drawHeight
-                ) / 2,
-
-            drawWidth,
-            drawHeight
-        };
-
-        SDL_RenderCopy(
-            app.renderer,
-            app.readerImageTexture,
-            nullptr,
-            &destination
-        );
-    }
-    else
-    {
-        int y =
-            45;
-
-        for (
-            int row = 0;
-            row <
-                READER_VISIBLE_LINES;
-            ++row
+        if (
+            page.kind ==
+            PageKind::Text
         )
         {
-            const int index =
-                app.readerTopLine
-                + row;
+            int y =
+                READER_TOP;
 
-            if (
-                index >=
-                static_cast<int>(
-                    app.readerLines.size()
-                )
+            for (
+                const TextLine& line :
+                page.lines
             )
             {
-                break;
+                if (
+                    !line.text.empty()
+                )
+                {
+                    if (
+                        line.centered
+                    )
+                    {
+                        drawCenteredText(
+                            app,
+                            app.fontReader,
+                            line.text,
+                            y,
+                            text
+                        );
+                    }
+                    else
+                    {
+                        drawText(
+                            app,
+                            app.fontReader,
+                            line.text,
+                            TEXT_LEFT,
+                            y,
+                            text
+                        );
+                    }
+                }
+
+                y +=
+                    READER_LINE_HEIGHT;
+            }
+        }
+        else
+        {
+            int imageAreaHeight =
+                imageAreaHeightForPage(
+                    page
+                );
+
+            int imageAreaTop =
+                43;
+
+            if (
+                app.readerImageTexture
+            )
+            {
+                SDL_Rect destination
+                {
+                    TEXT_LEFT
+                        + (
+                            TEXT_WIDTH
+                            - app.readerImageWidth
+                        ) / 2,
+
+                    imageAreaTop
+                        + (
+                            imageAreaHeight
+                            - app.readerImageHeight
+                        ) / 2,
+
+                    app.readerImageWidth,
+                    app.readerImageHeight
+                };
+
+                SDL_RenderCopy(
+                    app.renderer,
+                    app.readerImageTexture,
+                    nullptr,
+                    &destination
+                );
+            }
+            else
+            {
+                drawCenteredText(
+                    app,
+                    app.fontSmall,
+                    app.readerImageError.empty()
+                        ? "Image unavailable"
+                        : app.readerImageError,
+                    imageAreaTop
+                        + imageAreaHeight / 2,
+                    error
+                );
             }
 
-            drawText(
-                app,
-                app.fontReader,
-                app.readerLines[
-                    index
-                ],
-                22,
-                y,
-                text
-            );
+            int captionY =
+                imageAreaTop
+                + imageAreaHeight
+                + 6;
 
-            y +=
-                READER_LINE_HEIGHT;
+            for (
+                const TextLine& line :
+                page.captionLines
+            )
+            {
+                if (
+                    !line.text.empty()
+                )
+                {
+                    drawCenteredText(
+                        app,
+                        app.fontSmall,
+                        line.text,
+                        captionY,
+                        text
+                    );
+                }
+
+                captionY +=
+                    16;
+            }
         }
     }
 
-    std::string progress;
-
-    if (
-        app.readerContent ==
-        ReaderContent::Image
-    )
-    {
-        progress =
-            "Cover";
-    }
-    else
-    {
-        progress =
-            "Page "
-            + std::to_string(
-                currentPage(
-                    app
-                )
+    std::string pageProgress =
+        "Page "
+        + std::to_string(
+            app.readerPageIndex + 1
+        )
+        + "/"
+        + std::to_string(
+            std::max<std::size_t>(
+                1,
+                app.readerPages.size()
             )
-            + "/"
-            + std::to_string(
-                totalPages(
-                    app
-                )
-            );
-    }
-
-    const std::string controls =
-        app.readerContent ==
-                ReaderContent::Image
-            ? "L/R Page  TRIANGLE Index  O Back"
-            : "L/R Page  TRIANGLE Index  O Back";
+        );
 
     drawText(
         app,
         app.fontSmall,
-        controls,
+        "L/R Page  TRIANGLE Index  O Back",
         14,
         253,
         muted
     );
 
-    const int progressWidth =
+    int progressWidth =
         textPixelWidth(
             app.fontSmall,
-            progress
+            pageProgress
         );
 
     drawText(
         app,
         app.fontSmall,
-        progress,
+        pageProgress,
         SCREEN_WIDTH
             - 14
             - progressWidth,
@@ -6174,23 +7187,53 @@ void renderReader(
 void renderToc(
     App& app)
 {
-    const SDL_Color background =
-        {18, 19, 20, 255};
+    const SDL_Color background
+    {
+        18,
+        19,
+        20,
+        255
+    };
 
-    const SDL_Color header =
-        {31, 33, 35, 255};
+    const SDL_Color header
+    {
+        31,
+        33,
+        35,
+        255
+    };
 
-    const SDL_Color selection =
-        {48, 50, 50, 255};
+    const SDL_Color selection
+    {
+        48,
+        50,
+        50,
+        255
+    };
 
-    const SDL_Color text =
-        {235, 235, 230, 255};
+    const SDL_Color text
+    {
+        235,
+        235,
+        230,
+        255
+    };
 
-    const SDL_Color muted =
-        {150, 150, 145, 255};
+    const SDL_Color muted
+    {
+        150,
+        150,
+        145,
+        255
+    };
 
-    const SDL_Color current =
-        {190, 190, 175, 255};
+    const SDL_Color current
+    {
+        190,
+        190,
+        175,
+        255
+    };
 
     SDL_SetRenderDrawColor(
         app.renderer,
@@ -6248,7 +7291,7 @@ void renderToc(
     );
 
     if (
-        app.readerSpine.empty()
+        app.readerToc.empty()
     )
     {
         drawText(
@@ -6263,24 +7306,18 @@ void renderToc(
     else
     {
         int firstItem =
-            0;
-
-        if (
             app.tocSelected >=
-            TOC_VISIBLE_ITEMS
-        )
-        {
-            firstItem =
-                app.tocSelected
+                TOC_VISIBLE_ITEMS
+            ? app.tocSelected
                 - TOC_VISIBLE_ITEMS
-                + 1;
-        }
+                + 1
+            : 0;
 
-        const int maxFirst =
+        int maxFirst =
             std::max(
                 0,
                 static_cast<int>(
-                    app.readerSpine.size()
+                    app.readerToc.size()
                 )
                 - TOC_VISIBLE_ITEMS
             );
@@ -6298,32 +7335,32 @@ void renderToc(
             ++row
         )
         {
-            const int index =
+            int index =
                 firstItem
                 + row;
 
             if (
                 index >=
                 static_cast<int>(
-                    app.readerSpine.size()
+                    app.readerToc.size()
                 )
             )
             {
                 break;
             }
 
-            const int y =
+            int y =
                 53
                 + row
                 * TOC_ROW_HEIGHT;
 
-            const bool isSelected =
+            bool isSelected =
                 index ==
                 app.tocSelected;
 
-            const bool isCurrent =
+            bool isCurrent =
                 index ==
-                app.readerChapterIndex;
+                app.readerActiveTocIndex;
 
             if (
                 isSelected
@@ -6351,28 +7388,28 @@ void renderToc(
                 );
             }
 
-            const std::string number =
+            std::string number =
                 std::to_string(
                     index + 1
                 )
                 + "/"
                 + std::to_string(
-                    app.readerSpine.size()
+                    app.readerToc.size()
                 );
 
-            const int numberWidth =
+            int numberWidth =
                 textPixelWidth(
                     app.fontSmall,
                     number
                 );
 
-            const int numberX =
+            int numberX =
                 SCREEN_WIDTH
                 - 22
                 - numberWidth;
 
             std::string title =
-                app.readerSpine[
+                app.readerToc[
                     index
                 ].title;
 
@@ -6476,15 +7513,9 @@ void render(
 void shutdown(
     App& app)
 {
-    if (
-        !app.readerBookFilename.empty() &&
-        app.readerChapterIndex >= 0
-    )
-    {
-        rememberCurrentProgress(
-            app
-        );
-    }
+    rememberCurrentProgress(
+        app
+    );
 
     destroyReaderImage(
         app
@@ -6553,7 +7584,7 @@ void shutdown(
     SDL_Quit();
 }
 
-}
+} // namespace
 
 int main(
     int argc,
