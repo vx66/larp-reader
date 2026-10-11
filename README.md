@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/xmb/ICON0.PNG" alt="Larp Reader icon" width="144">
+
 # 📖 Larp Reader
 
 ### A lightweight native EPUB reader for the Sony PSP
@@ -66,6 +68,7 @@ The reader has been tested on real PSP hardware as well as PPSSPP.
 - Persistent orientation, theme, and font size.
 - Support for EPUB filenames containing accented / Unicode characters on real PSP hardware.
 - PSP-safe scaling for large EPUB illustrations.
+- Software image-scaling fallback for image formats that cannot be scaled directly by the PSP SDL blitter.
 - Custom PSP XMB icon and background.
 - Integrated debug logging.
 
@@ -167,6 +170,18 @@ Texture dimensions are limited to 512x512
 ```
 
 and also avoids portrait rotation failures caused by oversized image surfaces.
+
+### Image scaling compatibility
+
+Some decoded image formats cannot be scaled directly by the SDL software blitter used on the PSP and may return:
+
+```text
+Blit combination not supported
+```
+
+Larp Reader first uses the normal SDL scaling path and automatically falls back to a small software scaler when the PSP cannot handle that pixel-format combination.
+
+The fallback scales directly into a PSP-safe RGBA32 surface, avoiding a full-size converted copy of the original image.
 
 ### Accented and Unicode EPUB filenames
 

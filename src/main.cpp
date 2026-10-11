@@ -434,7 +434,7 @@ void resetDebugLog()
 
     std::fprintf(
         file,
-        "Larp Reader 0.0.21 PSP filename compatibility debug log\n"
+        "Larp Reader 0.0.22 hardware compatibility debug log\n"
     );
 
     std::fprintf(
@@ -6748,6 +6748,306 @@ void destroyReaderImage(
     app.readerImageError.clear();
 }
 
+std::uint32_t readSurfacePixel(
+    const SDL_Surface* surface,
+    int x,
+    int y)
+{
+    const int bytesPerPixel =
+        surface->format->BytesPerPixel;
+
+    const std::uint8_t* pixel =
+        static_cast<
+            const std::uint8_t*
+        >(
+            surface->pixels
+        )
+        + y * surface->pitch
+        + x * bytesPerPixel;
+
+    switch (
+        bytesPerPixel
+    )
+    {
+        case 1:
+            return
+                pixel[0];
+
+        case 2:
+        {
+            std::uint16_t value = 0;
+
+            std::memcpy(
+                &value,
+                pixel,
+                sizeof(value)
+            );
+
+            return value;
+        }
+
+        case 3:
+        {
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+            return
+                (
+                    static_cast<
+                        std::uint32_t
+                    >(
+                        pixel[0]
+                    )
+                    << 16
+                )
+                |
+                (
+                    static_cast<
+                        std::uint32_t
+                    >(
+                        pixel[1]
+                    )
+                    << 8
+                )
+                |
+                static_cast<
+                    std::uint32_t
+                >(
+                    pixel[2]
+                );
+#else
+            return
+                static_cast<
+                    std::uint32_t
+                >(
+                    pixel[0]
+                )
+                |
+                (
+                    static_cast<
+                        std::uint32_t
+                    >(
+                        pixel[1]
+                    )
+                    << 8
+                )
+                |
+                (
+                    static_cast<
+                        std::uint32_t
+                    >(
+                        pixel[2]
+                    )
+                    << 16
+                );
+#endif
+        }
+
+        case 4:
+        {
+            std::uint32_t value = 0;
+
+            std::memcpy(
+                &value,
+                pixel,
+                sizeof(value)
+            );
+
+            return value;
+        }
+
+        default:
+            return 0;
+    }
+}
+
+bool scaleSurfaceNearestToRgba32(
+    SDL_Surface* source,
+    SDL_Surface* destination)
+{
+    if (
+        !source ||
+        !destination ||
+        source->w <= 0 ||
+        source->h <= 0 ||
+        destination->w <= 0 ||
+        destination->h <= 0
+    )
+    {
+        SDL_SetError(
+            "Invalid surface for software scaling"
+        );
+
+        return false;
+    }
+
+    bool sourceLocked =
+        false;
+
+    bool destinationLocked =
+        false;
+
+    if (
+        SDL_MUSTLOCK(
+            source
+        )
+    )
+    {
+        if (
+            SDL_LockSurface(
+                source
+            ) != 0
+        )
+        {
+            return false;
+        }
+
+        sourceLocked =
+            true;
+    }
+
+    if (
+        SDL_MUSTLOCK(
+            destination
+        )
+    )
+    {
+        if (
+            SDL_LockSurface(
+                destination
+            ) != 0
+        )
+        {
+            if (
+                sourceLocked
+            )
+            {
+                SDL_UnlockSurface(
+                    source
+                );
+            }
+
+            return false;
+        }
+
+        destinationLocked =
+            true;
+    }
+
+    for (
+        int y = 0;
+        y < destination->h;
+        ++y
+    )
+    {
+        const int sourceY =
+            std::min(
+                source->h - 1,
+                static_cast<int>(
+                    (
+                        static_cast<
+                            std::int64_t
+                        >(
+                            y
+                        )
+                        * source->h
+                    )
+                    / destination->h
+                )
+            );
+
+        for (
+            int x = 0;
+            x < destination->w;
+            ++x
+        )
+        {
+            const int sourceX =
+                std::min(
+                    source->w - 1,
+                    static_cast<int>(
+                        (
+                            static_cast<
+                                std::int64_t
+                            >(
+                                x
+                            )
+                            * source->w
+                        )
+                        / destination->w
+                    )
+                );
+
+            const std::uint32_t sourcePixel =
+                readSurfacePixel(
+                    source,
+                    sourceX,
+                    sourceY
+                );
+
+            std::uint8_t r = 0;
+            std::uint8_t g = 0;
+            std::uint8_t b = 0;
+            std::uint8_t a = 255;
+
+            SDL_GetRGBA(
+                sourcePixel,
+                source->format,
+                &r,
+                &g,
+                &b,
+                &a
+            );
+
+            const std::uint32_t destinationPixel =
+                SDL_MapRGBA(
+                    destination->format,
+                    r,
+                    g,
+                    b,
+                    a
+                );
+
+            std::uint8_t* destinationBytes =
+                static_cast<
+                    std::uint8_t*
+                >(
+                    destination->pixels
+                )
+                + y * destination->pitch
+                + x
+                    * destination->format
+                        ->BytesPerPixel;
+
+            std::memcpy(
+                destinationBytes,
+                &destinationPixel,
+                sizeof(
+                    destinationPixel
+                )
+            );
+        }
+    }
+
+    if (
+        destinationLocked
+    )
+    {
+        SDL_UnlockSurface(
+            destination
+        );
+    }
+
+    if (
+        sourceLocked
+    )
+    {
+        SDL_UnlockSurface(
+            source
+        );
+    }
+
+    return true;
+}
+
 bool loadImageTextureFromEpub(
     App& app,
     const Book& book,
@@ -7023,6 +7323,11 @@ bool loadImageTextureFromEpub(
             nullptr
         );
 
+    const std::string blitError =
+        blitResult != 0
+        ? SDL_GetError()
+        : "";
+
     SDL_SetSurfaceBlendMode(
         source,
         originalBlendMode
@@ -7032,31 +7337,80 @@ bool loadImageTextureFromEpub(
         blitResult != 0
     )
     {
-        error =
-            std::string(
-                "Could not scale image: "
+        /*
+         * Some PSP SDL software blitters cannot combine scaling with
+         * conversion from certain decoded image formats (for example,
+         * indexed or unusual PNG surfaces) into RGBA32. PPSSPP may hide
+         * this because its host SDL path is more permissive.
+         *
+         * Keep the fast SDL_BlitScaled path for normal JPEG/RGB images,
+         * but fall back to a tiny nearest-neighbour software scaler when
+         * the PSP reports "Blit combination not supported".
+         *
+         * The fallback writes directly into the already-small RGBA32
+         * destination, so it does NOT allocate a full-size RGBA copy of
+         * the original image and keeps memory usage safe on real PSP.
+         */
+        debugLog(
+            "IMG SDL scale unsupported, using software fallback: %s source=%dx%d format=%s bpp=%d target=%dx%d error=%s",
+            imagePath.c_str(),
+            source->w,
+            source->h,
+            SDL_GetPixelFormatName(
+                source->format->format
+            ),
+            source->format->BitsPerPixel,
+            scaledWidth,
+            scaledHeight,
+            blitError.empty()
+                ? "(none)"
+                : blitError.c_str()
+        );
+
+        SDL_ClearError();
+
+        if (
+            !scaleSurfaceNearestToRgba32(
+                source,
+                prepared
             )
-            + SDL_GetError();
+        )
+        {
+            error =
+                std::string(
+                    "Could not scale image: "
+                )
+                + SDL_GetError();
+
+            debugLog(
+                "IMG software scale failed: %s source=%dx%d target=%dx%d error=%s",
+                imagePath.c_str(),
+                source->w,
+                source->h,
+                scaledWidth,
+                scaledHeight,
+                SDL_GetError()
+            );
+
+            SDL_FreeSurface(
+                prepared
+            );
+
+            SDL_FreeSurface(
+                source
+            );
+
+            return false;
+        }
 
         debugLog(
-            "IMG prepare scale failed: %s source=%dx%d target=%dx%d error=%s",
+            "IMG software scale succeeded: %s source=%dx%d target=%dx%d",
             imagePath.c_str(),
             source->w,
             source->h,
             scaledWidth,
-            scaledHeight,
-            SDL_GetError()
+            scaledHeight
         );
-
-        SDL_FreeSurface(
-            prepared
-        );
-
-        SDL_FreeSurface(
-            source
-        );
-
-        return false;
     }
 
     /*
