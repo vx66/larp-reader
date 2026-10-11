@@ -105,11 +105,26 @@ enum class Orientation {
     Portrait
 };
 
+enum class ReaderTheme {
+    Sepia,
+    Light,
+    Dark,
+    Black
+};
+
 struct CachedText {
     SDL_Texture* texture = nullptr;
 
     int width = 0;
     int height = 0;
+};
+
+struct ReaderPalette {
+    SDL_Color background;
+    SDL_Color header;
+    SDL_Color text;
+    SDL_Color muted;
+    SDL_Color error;
 };
 
 struct Book {
@@ -294,6 +309,9 @@ struct App {
     Orientation orientation =
         Orientation::Landscape;
 
+    ReaderTheme readerTheme =
+        ReaderTheme::Sepia;
+
     int readerFontSize =
         READER_FONT_DEFAULT;
 
@@ -413,7 +431,7 @@ void resetDebugLog()
 
     std::fprintf(
         file,
-        "Larp Reader 0.0.18 font-size debug log\n"
+        "Larp Reader 0.0.19 themes debug log\n"
     );
 
     std::fprintf(
@@ -4191,10 +4209,10 @@ int readerContentBottom(
             canvasHeight(
                 app
             )
-            - 46;
+            - 62;
     }
 
-    return 242;
+    return 226;
 }
 
 int readerVisibleLines(
@@ -5297,6 +5315,126 @@ int findPageForSemanticPosition(
     return 0;
 }
 
+const char* readerThemeSettingValue(
+    ReaderTheme theme)
+{
+    switch (
+        theme
+    )
+    {
+        case ReaderTheme::Light:
+            return "light";
+
+        case ReaderTheme::Dark:
+            return "dark";
+
+        case ReaderTheme::Black:
+            return "black";
+
+        case ReaderTheme::Sepia:
+        default:
+            return "sepia";
+    }
+}
+
+const char* readerThemeDisplayName(
+    ReaderTheme theme)
+{
+    switch (
+        theme
+    )
+    {
+        case ReaderTheme::Light:
+            return "Claro";
+
+        case ReaderTheme::Dark:
+            return "Oscuro";
+
+        case ReaderTheme::Black:
+            return "Negro";
+
+        case ReaderTheme::Sepia:
+        default:
+            return "Sepia";
+    }
+}
+
+ReaderTheme nextReaderTheme(
+    ReaderTheme theme)
+{
+    switch (
+        theme
+    )
+    {
+        case ReaderTheme::Sepia:
+            return ReaderTheme::Light;
+
+        case ReaderTheme::Light:
+            return ReaderTheme::Dark;
+
+        case ReaderTheme::Dark:
+            return ReaderTheme::Black;
+
+        case ReaderTheme::Black:
+        default:
+            return ReaderTheme::Sepia;
+    }
+}
+
+ReaderPalette readerPalette(
+    ReaderTheme theme)
+{
+    switch (
+        theme
+    )
+    {
+        case ReaderTheme::Light:
+        {
+            return ReaderPalette{
+                SDL_Color{250, 250, 247, 255},
+                SDL_Color{230, 230, 225, 255},
+                SDL_Color{30, 30, 28, 255},
+                SDL_Color{100, 100, 95, 255},
+                SDL_Color{160, 65, 65, 255}
+            };
+        }
+
+        case ReaderTheme::Dark:
+        {
+            return ReaderPalette{
+                SDL_Color{30, 32, 34, 255},
+                SDL_Color{43, 45, 47, 255},
+                SDL_Color{232, 232, 228, 255},
+                SDL_Color{158, 158, 152, 255},
+                SDL_Color{230, 130, 130, 255}
+            };
+        }
+
+        case ReaderTheme::Black:
+        {
+            return ReaderPalette{
+                SDL_Color{0, 0, 0, 255},
+                SDL_Color{14, 14, 14, 255},
+                SDL_Color{235, 235, 232, 255},
+                SDL_Color{145, 145, 140, 255},
+                SDL_Color{235, 125, 125, 255}
+            };
+        }
+
+        case ReaderTheme::Sepia:
+        default:
+        {
+            return ReaderPalette{
+                SDL_Color{244, 239, 225, 255},
+                SDL_Color{224, 218, 201, 255},
+                SDL_Color{36, 34, 30, 255},
+                SDL_Color{100, 95, 85, 255},
+                SDL_Color{150, 70, 70, 255}
+            };
+        }
+    }
+}
+
 void loadSettings(
     App& app)
 {
@@ -5350,6 +5488,38 @@ void loadSettings(
                 Orientation::Landscape;
         }
         else if (
+            line ==
+            "theme=sepia"
+        )
+        {
+            app.readerTheme =
+                ReaderTheme::Sepia;
+        }
+        else if (
+            line ==
+            "theme=light"
+        )
+        {
+            app.readerTheme =
+                ReaderTheme::Light;
+        }
+        else if (
+            line ==
+            "theme=dark"
+        )
+        {
+            app.readerTheme =
+                ReaderTheme::Dark;
+        }
+        else if (
+            line ==
+            "theme=black"
+        )
+        {
+            app.readerTheme =
+                ReaderTheme::Black;
+        }
+        else if (
             line.rfind(
                 "font_size=",
                 0
@@ -5391,6 +5561,14 @@ void saveSettings(
             Orientation::Portrait
         ? "portrait"
         : "landscape"
+    );
+
+    std::fprintf(
+        file,
+        "theme=%s\n",
+        readerThemeSettingValue(
+            app.readerTheme
+        )
     );
 
     std::fprintf(
@@ -5653,6 +5831,37 @@ void drawCircleButtonIcon(
     }
 }
 
+void drawCrossButtonIcon(
+    App& app,
+    int x,
+    int y,
+    SDL_Color color)
+{
+    SDL_SetRenderDrawColor(
+        app.renderer,
+        color.r,
+        color.g,
+        color.b,
+        color.a
+    );
+
+    drawLogicalLine(
+        app,
+        x,
+        y,
+        x + 8,
+        y + 8
+    );
+
+    drawLogicalLine(
+        app,
+        x + 8,
+        y,
+        x,
+        y + 8
+    );
+}
+
 void drawText(
     App& app,
     TTF_Font* font,
@@ -5757,6 +5966,58 @@ int drawReaderFooterControls(
         textPixelWidth(
             app.fontSmall,
             "Volver"
+        );
+
+    return x;
+}
+
+int drawReaderThemeControl(
+    App& app,
+    int x,
+    int y,
+    SDL_Color color)
+{
+    constexpr int iconWidth =
+        9;
+
+    constexpr int iconTextGap =
+        4;
+
+    constexpr int iconYOffset =
+        3;
+
+    drawCrossButtonIcon(
+        app,
+        x,
+        y + iconYOffset,
+        color
+    );
+
+    x +=
+        iconWidth
+        + iconTextGap;
+
+    const std::string label =
+        "Tema "
+        + std::string(
+            readerThemeDisplayName(
+                app.readerTheme
+            )
+        );
+
+    drawText(
+        app,
+        app.fontSmall,
+        label,
+        x,
+        y,
+        color
+    );
+
+    x +=
+        textPixelWidth(
+            app.fontSmall,
+            label
         );
 
     return x;
@@ -8598,6 +8859,38 @@ void toggleReaderOrientation(
 }
 
 
+void cycleReaderTheme(
+    App& app)
+{
+    if (
+        app.readerSpineIndex < 0 ||
+        app.readerPages.empty()
+    )
+    {
+        return;
+    }
+
+    app.readerTheme =
+        nextReaderTheme(
+            app.readerTheme
+        );
+
+    saveSettings(
+        app
+    );
+
+    clearTextCache(
+        app
+    );
+
+    debugLog(
+        "Reader theme changed to %s",
+        readerThemeSettingValue(
+            app.readerTheme
+        )
+    );
+}
+
 void cycleReaderFontSize(
     App& app)
 {
@@ -9043,6 +9336,13 @@ bool initialize(
         app.readerFontSize
     );
 
+    debugLog(
+        "Startup reader theme: %s",
+        readerThemeSettingValue(
+            app.readerTheme
+        )
+    );
+
     return true;
 }
 
@@ -9195,6 +9495,15 @@ void handleReaderButton(
             moveReaderByPage(
                 app,
                 1
+            );
+
+            break;
+        }
+
+        case SDL_CONTROLLER_BUTTON_A:
+        {
+            cycleReaderTheme(
+                app
             );
 
             break;
@@ -9928,45 +10237,25 @@ void renderReader(
             app
         );
 
-    const SDL_Color background
-    {
-        244,
-        239,
-        225,
-        255
-    };
+    const ReaderPalette palette =
+        readerPalette(
+            app.readerTheme
+        );
 
-    const SDL_Color header
-    {
-        224,
-        218,
-        201,
-        255
-    };
+    const SDL_Color background =
+        palette.background;
 
-    const SDL_Color text
-    {
-        36,
-        34,
-        30,
-        255
-    };
+    const SDL_Color header =
+        palette.header;
 
-    const SDL_Color muted
-    {
-        100,
-        95,
-        85,
-        255
-    };
+    const SDL_Color text =
+        palette.text;
 
-    const SDL_Color error
-    {
-        150,
-        70,
-        70,
-        255
-    };
+    const SDL_Color muted =
+        palette.muted;
+
+    const SDL_Color error =
+        palette.error;
 
     SDL_SetRenderDrawColor(
         app.renderer,
@@ -10256,9 +10545,12 @@ void renderReader(
     )
     {
         const int footerLine1 =
-            height - 34;
+            height - 50;
 
         const int footerLine2 =
+            height - 34;
+
+        const int footerLine3 =
             height - 18;
 
         drawText(
@@ -10287,11 +10579,18 @@ void renderReader(
             muted
         );
 
-        const int controlsEnd =
-            drawReaderFooterControls(
+        drawReaderFooterControls(
+            app,
+            10,
+            footerLine2,
+            muted
+        );
+
+        const int themeEnd =
+            drawReaderThemeControl(
                 app,
                 10,
-                footerLine2,
+                footerLine3,
                 muted
             );
 
@@ -10305,14 +10604,17 @@ void renderReader(
             app,
             app.fontSmall,
             fontControl,
-            controlsEnd + 8,
-            footerLine2,
+            themeEnd + 10,
+            footerLine3,
             muted
         );
     }
     else
     {
-        constexpr int footerY =
+        constexpr int footerLine1 =
+            237;
+
+        constexpr int footerLine2 =
             253;
 
         drawText(
@@ -10320,38 +10622,7 @@ void renderReader(
             app.fontSmall,
             "L/R Página",
             14,
-            footerY,
-            muted
-        );
-
-        const int controlsX =
-            14
-            + textPixelWidth(
-                app.fontSmall,
-                "L/R Página"
-            )
-            + 12;
-
-        const int controlsEnd =
-            drawReaderFooterControls(
-                app,
-                controlsX,
-                footerY,
-                muted
-            );
-
-        const std::string fontControl =
-            "SEL Tamaño "
-            + std::to_string(
-                app.readerFontSize
-            );
-
-        drawText(
-            app,
-            app.fontSmall,
-            fontControl,
-            controlsEnd + 8,
-            footerY,
+            footerLine1,
             muted
         );
 
@@ -10368,7 +10639,38 @@ void renderReader(
             width
                 - 14
                 - progressWidth,
-            253,
+            footerLine1,
+            muted
+        );
+
+        const int controlsEnd =
+            drawReaderFooterControls(
+                app,
+                14,
+                footerLine2,
+                muted
+            );
+
+        const int themeEnd =
+            drawReaderThemeControl(
+                app,
+                controlsEnd + 10,
+                footerLine2,
+                muted
+            );
+
+        const std::string fontControl =
+            "SEL Tamaño "
+            + std::to_string(
+                app.readerFontSize
+            );
+
+        drawText(
+            app,
+            app.fontSmall,
+            fontControl,
+            themeEnd + 10,
+            footerLine2,
             muted
         );
     }
