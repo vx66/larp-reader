@@ -5,6 +5,8 @@
 #include <tinyxml2.h>
 #include <zip.h>
 
+#include <pspiofilemgr.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -13,7 +15,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dirent.h>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -433,7 +434,7 @@ void resetDebugLog()
 
     std::fprintf(
         file,
-        "Larp Reader 0.0.20 hardware image compatibility debug log\n"
+        "Larp Reader 0.0.21 PSP filename compatibility debug log\n"
     );
 
     std::fprintf(
@@ -480,6 +481,85 @@ bool endsWithEpub(
                 filename.size() - 5
             )
         ) == ".epub";
+}
+
+bool containsNonAscii(
+    const std::string& text)
+{
+    for (
+        unsigned char c :
+        text
+    )
+    {
+        if (
+            c >= 0x80
+        )
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::string boundedCString(
+    const unsigned char* data,
+    std::size_t capacity)
+{
+    if (
+        !data ||
+        capacity == 0
+    )
+    {
+        return {};
+    }
+
+    std::size_t length = 0;
+
+    while (
+        length < capacity &&
+        data[length] != 0
+    )
+    {
+        ++length;
+    }
+
+    return std::string(
+        reinterpret_cast<
+            const char*
+        >(
+            data
+        ),
+        length
+    );
+}
+
+void appendUniqueFilenameCandidate(
+    std::vector<std::string>& candidates,
+    const std::string& candidate)
+{
+    if (
+        candidate.empty() ||
+        candidate == "." ||
+        candidate == ".."
+    )
+    {
+        return;
+    }
+
+    if (
+        std::find(
+            candidates.begin(),
+            candidates.end(),
+            candidate
+        ) ==
+        candidates.end()
+    )
+    {
+        candidates.push_back(
+            candidate
+        );
+    }
 }
 
 int hexValue(
@@ -1766,73 +1846,373 @@ Book loadBook(
 
 std::vector<Book> scanBooks()
 {
-    std::vector<std::string>
-        filenames;
+    std::vector<Book> books;
 
-    DIR* directory =
-        opendir(
+    const SceUID directory =
+        sceIoDopen(
             BOOKS_PATH
         );
 
-    if (!directory)
-        return {};
-
-    while (
-        dirent* entry =
-            readdir(
-                directory
-            )
+    if (
+        directory < 0
     )
     {
-        const std::string filename =
-            entry->d_name;
+        debugLog(
+            "BOOK SCAN: sceIoDopen failed path=%s error=0x%08X",
+            BOOKS_PATH,
+            static_cast<unsigned int>(
+                directory
+            )
+        );
+
+        return books;
+    }
+
+    /*
+     * sceIoDread() has two observed d_private layouts for Memory Stick FAT
+     * entries, selected by the SDK version expected by the runtime:
+     *
+     * Legacy:
+     *   [0..12]  FAT 8.3 short filename
+     *   [13..]   long filename
+     *
+     * Modern:
+     *   [0..3]   total private-area size
+     *   [4..19]  FAT 8.3 short filename
+     *   [20..]   long filename
+     *
+     * PSPDEV exposes d_private as SceIoFatDirentPrivate*, but real PSP
+     * hardware can still return the legacy byte layout. Use an aligned raw
+     * buffer, initialize the modern size field, and detect which layout was
+     * actually returned after sceIoDread().
+     */
+    constexpr std::size_t privateAreaSize =
+        1044;
+
+    constexpr std::size_t legacyShortOffset =
+        0;
+
+    constexpr std::size_t legacyShortCapacity =
+        13;
+
+    constexpr std::size_t legacyLongOffset =
+        13;
+
+    constexpr std::size_t modernShortOffset =
+        4;
+
+    constexpr std::size_t modernShortCapacity =
+        16;
+
+    constexpr std::size_t modernLongOffset =
+        20;
+
+    int readResult = 0;
+
+    while (true)
+    {
+        SceIoDirent entry;
+
+        std::memset(
+            &entry,
+            0,
+            sizeof(entry)
+        );
+
+        alignas(4)
+        unsigned char privateArea[
+            privateAreaSize
+        ];
+
+        std::memset(
+            privateArea,
+            0,
+            sizeof(privateArea)
+        );
+
+        const std::uint32_t requestedPrivateSize =
+            static_cast<std::uint32_t>(
+                privateAreaSize
+            );
+
+        std::memcpy(
+            privateArea,
+            &requestedPrivateSize,
+            sizeof(requestedPrivateSize)
+        );
+
+        entry.d_private =
+            reinterpret_cast<
+                SceIoFatDirentPrivate*
+            >(
+                privateArea
+            );
+
+        readResult =
+            sceIoDread(
+                directory,
+                &entry
+            );
 
         if (
-            filename == "." ||
-            filename == ".."
+            readResult <= 0
+        )
+        {
+            break;
+        }
+
+        const std::string directoryName =
+            entry.d_name;
+
+        if (
+            directoryName.empty() ||
+            directoryName == "." ||
+            directoryName == ".."
         )
         {
             continue;
         }
 
         if (
-            endsWithEpub(
-                filename
+            FIO_SO_ISDIR(
+                entry.d_stat.st_attr
             )
         )
         {
-            filenames.push_back(
-                filename
+            debugLog(
+                "BOOK SCAN DIR: %s",
+                directoryName.c_str()
+            );
+
+            continue;
+        }
+
+        std::uint32_t returnedPrivateSize =
+            0;
+
+        std::memcpy(
+            &returnedPrivateSize,
+            privateArea,
+            sizeof(returnedPrivateSize)
+        );
+
+        const bool modernPrivateLayout =
+            returnedPrivateSize ==
+            requestedPrivateSize;
+
+        const std::size_t shortOffset =
+            modernPrivateLayout
+            ? modernShortOffset
+            : legacyShortOffset;
+
+        const std::size_t shortCapacity =
+            modernPrivateLayout
+            ? modernShortCapacity
+            : legacyShortCapacity;
+
+        const std::size_t longOffset =
+            modernPrivateLayout
+            ? modernLongOffset
+            : legacyLongOffset;
+
+        const std::string shortName =
+            boundedCString(
+                privateArea
+                    + shortOffset,
+                shortCapacity
+            );
+
+        const std::string privateLongName =
+            boundedCString(
+                privateArea
+                    + longOffset,
+                privateAreaSize
+                    - longOffset
+            );
+
+        debugLog(
+            "BOOK SCAN ENTRY: name=%s short=%s privateLong=%s privateLayout=%s rawSize=0x%08X size=%lld",
+            directoryName.c_str(),
+            shortName.empty()
+                ? "(none)"
+                : shortName.c_str(),
+            privateLongName.empty()
+                ? "(none)"
+                : privateLongName.c_str(),
+            modernPrivateLayout
+                ? "modern"
+                : "legacy",
+            static_cast<unsigned int>(
+                returnedPrivateSize
+            ),
+            static_cast<long long>(
+                entry.d_stat.st_size
+            )
+        );
+
+        std::vector<std::string>
+            candidates;
+
+        candidates.reserve(
+            3
+        );
+
+        /*
+         * Prefer the ASCII 8.3 alias for a non-ASCII long name. It is the
+         * safest path to reopen on the real PSP. For ordinary ASCII names,
+         * keep using the long filename so existing progress keys remain
+         * unchanged.
+         */
+        if (
+            containsNonAscii(
+                directoryName
+            ) &&
+            !shortName.empty()
+        )
+        {
+            appendUniqueFilenameCandidate(
+                candidates,
+                shortName
+            );
+        }
+
+        appendUniqueFilenameCandidate(
+            candidates,
+            directoryName
+        );
+
+        appendUniqueFilenameCandidate(
+            candidates,
+            privateLongName
+        );
+
+        appendUniqueFilenameCandidate(
+            candidates,
+            shortName
+        );
+
+        Book declaredEpub;
+        bool haveDeclaredEpub =
+            false;
+
+        bool accepted =
+            false;
+
+        for (
+            const std::string& candidate :
+            candidates
+        )
+        {
+            const bool declaredByExtension =
+                endsWithEpub(
+                    candidate
+                );
+
+            Book probe =
+                loadBook(
+                    candidate
+                );
+
+            debugLog(
+                "BOOK SCAN PROBE: name=%s extension=%s valid=%s error=%s",
+                candidate.c_str(),
+                declaredByExtension
+                    ? "epub"
+                    : "other",
+                probe.valid
+                    ? "yes"
+                    : "no",
+                probe.error.empty()
+                    ? "(none)"
+                    : probe.error.c_str()
+            );
+
+            if (
+                probe.valid
+            )
+            {
+                if (
+                    !declaredByExtension
+                )
+                {
+                    debugLog(
+                        "BOOK SCAN FAT ALIAS ACCEPTED: %s -> title=%s",
+                        candidate.c_str(),
+                        probe.title.c_str()
+                    );
+                }
+
+                books.push_back(
+                    std::move(
+                        probe
+                    )
+                );
+
+                accepted =
+                    true;
+
+                break;
+            }
+
+            if (
+                declaredByExtension &&
+                !haveDeclaredEpub
+            )
+            {
+                declaredEpub =
+                    std::move(
+                        probe
+                    );
+
+                haveDeclaredEpub =
+                    true;
+            }
+        }
+
+        if (
+            !accepted &&
+            haveDeclaredEpub
+        )
+        {
+            /*
+             * Preserve the old behavior for a file explicitly named .epub:
+             * show it in the library with its parsing/opening error instead
+             * of silently hiding it.
+             */
+            books.push_back(
+                std::move(
+                    declaredEpub
+                )
             );
         }
     }
 
-    closedir(
+    sceIoDclose(
         directory
     );
 
-    std::sort(
-        filenames.begin(),
-        filenames.end()
-    );
-
-    std::vector<Book> books;
-
-    books.reserve(
-        filenames.size()
-    );
-
-    for (
-        const std::string& filename :
-        filenames
+    if (
+        readResult < 0
     )
     {
-        books.push_back(
-            loadBook(
-                filename
+        debugLog(
+            "BOOK SCAN: sceIoDread ended with error=0x%08X",
+            static_cast<unsigned int>(
+                readResult
             )
         );
     }
+
+    std::sort(
+        books.begin(),
+        books.end(),
+        [](const Book& left, const Book& right)
+        {
+            return
+                left.filename <
+                right.filename;
+        }
+    );
 
     return books;
 }
