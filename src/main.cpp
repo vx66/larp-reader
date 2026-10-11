@@ -24,17 +24,18 @@ namespace {
 constexpr int SCREEN_WIDTH = 480;
 constexpr int SCREEN_HEIGHT = 272;
 
-constexpr int TEXT_LEFT = 22;
-constexpr int TEXT_WIDTH = 436;
+constexpr int PORTRAIT_WIDTH = 272;
+constexpr int PORTRAIT_HEIGHT = 480;
+
+constexpr int LANDSCAPE_TEXT_LEFT = 22;
+constexpr int PORTRAIT_TEXT_LEFT = 16;
 
 constexpr int READER_TOP = 45;
-constexpr int READER_BOTTOM = 242;
 constexpr int READER_LINE_HEIGHT = 18;
-constexpr int READER_VISIBLE_LINES = 11;
 
-constexpr int TOC_VISIBLE_ITEMS = 7;
+constexpr int LEGACY_READER_VISIBLE_LINES = 11;
+
 constexpr int TOC_ROW_HEIGHT = 27;
-
 constexpr int MAX_CAPTION_LINES = 4;
 
 constexpr const char* BOOKS_PATH =
@@ -42,6 +43,9 @@ constexpr const char* BOOKS_PATH =
 
 constexpr const char* PROGRESS_PATH =
     "ms0:/PSP/GAME/LarpReader/progress.tsv";
+
+constexpr const char* SETTINGS_PATH =
+    "ms0:/PSP/GAME/LarpReader/settings.cfg";
 
 constexpr const char* DEBUG_LOG_PATH =
     "ms0:/PSP/GAME/LarpReader/debug.log";
@@ -70,7 +74,8 @@ enum class LoadingStage {
 enum class DocumentPosition {
     Start,
     End,
-    Restore
+    Restore,
+    Relative
 };
 
 enum class BlockKind {
@@ -87,6 +92,11 @@ enum class TextStyle {
     Regular,
     Italic,
     Heading
+};
+
+enum class Orientation {
+    Landscape,
+    Portrait
 };
 
 struct CachedText {
@@ -154,7 +164,6 @@ struct ContentBlock {
 
 struct AnchorLocation {
     std::size_t blockIndex = 0;
-
     std::size_t textOffset = 0;
 
     bool hasTextOffset = false;
@@ -229,12 +238,15 @@ struct App {
 
     SDL_Renderer* renderer = nullptr;
 
+
     TTF_Font* fontNormal = nullptr;
+
     TTF_Font* fontSmall = nullptr;
     TTF_Font* fontSmallItalic = nullptr;
 
     TTF_Font* fontReader = nullptr;
     TTF_Font* fontReaderItalic = nullptr;
+
     TTF_Font* fontHeading = nullptr;
 
     SDL_GameController* controller =
@@ -260,6 +272,9 @@ struct App {
 
     LoadingStage loadingStage =
         LoadingStage::None;
+
+    Orientation orientation =
+        Orientation::Landscape;
 
     int selected = 0;
 
@@ -298,6 +313,8 @@ struct App {
     int pendingSearchDirection = 1;
 
     int pendingRestorePage = 0;
+
+    double pendingRestoreRatio = 0.0;
 
     int pendingTocIndex = -1;
 
@@ -373,7 +390,7 @@ void resetDebugLog()
 
     std::fprintf(
         file,
-        "Larp Reader 0.0.15 debug log\n"
+        "Larp Reader 0.0.16 debug log\n"
     );
 
     std::fprintf(
@@ -419,8 +436,7 @@ bool endsWithEpub(
             filename.substr(
                 filename.size() - 5
             )
-        )
-        == ".epub";
+        ) == ".epub";
 }
 
 int hexValue(
@@ -2013,7 +2029,7 @@ void collectNcxNavPoints(
                 src[0] != '\0'
             )
             {
-                std::string title =
+                const std::string title =
                     textElement
                     ? nodeText(
                         textElement
@@ -3668,13 +3684,10 @@ void collectContentBlocks(
         return;
     }
 
-    const std::size_t initialBlockIndex =
-        blocks.size();
-
     AnchorLocation outerLocation;
 
     outerLocation.blockIndex =
-        initialBlockIndex;
+        blocks.size();
 
     outerLocation.textOffset =
         0;
@@ -4057,6 +4070,115 @@ TTF_Font* loadFont(
     }
 
     return nullptr;
+}
+
+int canvasWidth(
+    const App& app)
+{
+    return
+        app.orientation ==
+            Orientation::Portrait
+        ? PORTRAIT_WIDTH
+        : SCREEN_WIDTH;
+}
+
+int canvasHeight(
+    const App& app)
+{
+    return
+        app.orientation ==
+            Orientation::Portrait
+        ? PORTRAIT_HEIGHT
+        : SCREEN_HEIGHT;
+}
+
+int readerTextLeft(
+    const App& app)
+{
+    return
+        app.orientation ==
+            Orientation::Portrait
+        ? PORTRAIT_TEXT_LEFT
+        : LANDSCAPE_TEXT_LEFT;
+}
+
+int readerTextWidth(
+    const App& app)
+{
+    return
+        canvasWidth(
+            app
+        )
+        - readerTextLeft(
+            app
+        )
+        * 2;
+}
+
+int readerContentBottom(
+    const App& app)
+{
+    if (
+        app.orientation ==
+        Orientation::Portrait
+    )
+    {
+        return
+            canvasHeight(
+                app
+            )
+            - 46;
+    }
+
+    return 242;
+}
+
+int readerVisibleLines(
+    const App& app)
+{
+    return
+        std::max(
+            1,
+            (
+                readerContentBottom(
+                    app
+                )
+                - READER_TOP
+            )
+            / READER_LINE_HEIGHT
+            + 1
+        );
+}
+
+int tocVisibleItems(
+    const App& app)
+{
+    if (
+        app.orientation ==
+        Orientation::Portrait
+    )
+    {
+        const int top =
+            60;
+
+        const int bottom =
+            canvasHeight(
+                app
+            )
+            - 28;
+
+        return
+            std::max(
+                1,
+                (
+                    bottom
+                    - top
+                )
+                / TOC_ROW_HEIGHT
+            );
+    }
+
+    return 7;
 }
 
 int textPixelWidth(
@@ -4550,9 +4672,6 @@ void assignAnchorsForTextBlock(
         document.anchors
     )
     {
-        const std::string& name =
-            pair.first;
-
         const AnchorLocation& location =
             pair.second;
 
@@ -4596,7 +4715,7 @@ void assignAnchorsForTextBlock(
         }
 
         anchorPages[
-            name
+            pair.first
         ] =
             page;
     }
@@ -4638,6 +4757,16 @@ LayoutResult layoutDocument(
     std::vector<TextLine>
         currentLines;
 
+    const int visibleLines =
+        readerVisibleLines(
+            app
+        );
+
+    const int textWidth =
+        readerTextWidth(
+            app
+        );
+
     for (
         std::size_t i = 0;
         i < document.blocks.size();
@@ -4656,7 +4785,7 @@ LayoutResult layoutDocument(
                 wrapTextBlock(
                     app,
                     block,
-                    TEXT_WIDTH
+                    textWidth
                 );
 
             if (
@@ -4664,7 +4793,7 @@ LayoutResult layoutDocument(
                 static_cast<int>(
                     currentLines.size()
                 ) <
-                READER_VISIBLE_LINES
+                visibleLines
             )
             {
                 currentLines.push_back(
@@ -4681,7 +4810,7 @@ LayoutResult layoutDocument(
                 static_cast<int>(
                     currentLines.size()
                 ) >=
-                READER_VISIBLE_LINES
+                visibleLines
             )
             {
                 flushTextPage(
@@ -4706,7 +4835,7 @@ LayoutResult layoutDocument(
                     static_cast<int>(
                         currentLines.size()
                     ) >=
-                    READER_VISIBLE_LINES
+                    visibleLines
                 )
                 {
                     flushTextPage(
@@ -4804,7 +4933,7 @@ LayoutResult layoutDocument(
                 wrapTextBlock(
                     app,
                     next,
-                    TEXT_WIDTH - 24,
+                    textWidth - 12,
                     true
                 );
 
@@ -4885,12 +5014,6 @@ LayoutResult layoutDocument(
         currentLines
     );
 
-    /*
-     * An anchor on a wrapper can legally point to
-     * blocks.size() when the element itself produced
-     * no direct visible block. Clamp those anchors to
-     * the final page rather than losing them entirely.
-     */
     if (
         !result.pages.empty()
     )
@@ -4943,6 +5066,711 @@ LayoutResult layoutDocument(
     }
 
     return result;
+}
+
+void loadSettings(
+    App& app)
+{
+    FILE* file =
+        std::fopen(
+            SETTINGS_PATH,
+            "r"
+        );
+
+    if (!file)
+        return;
+
+    char buffer[128];
+
+    while (
+        std::fgets(
+            buffer,
+            sizeof(buffer),
+            file
+        )
+    )
+    {
+        std::string line =
+            buffer;
+
+        while (
+            !line.empty() &&
+            (
+                line.back() == '\n' ||
+                line.back() == '\r'
+            )
+        )
+        {
+            line.pop_back();
+        }
+
+        if (
+            line ==
+            "orientation=portrait"
+        )
+        {
+            app.orientation =
+                Orientation::Portrait;
+        }
+        else if (
+            line ==
+            "orientation=landscape"
+        )
+        {
+            app.orientation =
+                Orientation::Landscape;
+        }
+    }
+
+    std::fclose(
+        file
+    );
+}
+
+void saveSettings(
+    const App& app)
+{
+    FILE* file =
+        std::fopen(
+            SETTINGS_PATH,
+            "w"
+        );
+
+    if (!file)
+        return;
+
+    std::fprintf(
+        file,
+        "orientation=%s\n",
+        app.orientation ==
+            Orientation::Portrait
+        ? "portrait"
+        : "landscape"
+    );
+
+    std::fclose(
+        file
+    );
+}
+
+bool bookPortraitRendering(
+    const App& app)
+{
+    return
+        app.orientation ==
+            Orientation::Portrait &&
+        app.screen !=
+            Screen::Library;
+}
+
+SDL_Rect rotateLogicalRectClockwise(
+    const SDL_Rect& logical)
+{
+    SDL_Rect physical
+    {
+        PORTRAIT_HEIGHT
+            - (
+                logical.y
+                + logical.h
+            ),
+
+        logical.x,
+
+        logical.h,
+        logical.w
+    };
+
+    return physical;
+}
+
+void fillLogicalRect(
+    App& app,
+    const SDL_Rect& logical)
+{
+    SDL_Rect destination =
+        bookPortraitRendering(
+            app
+        )
+        ? rotateLogicalRectClockwise(
+            logical
+        )
+        : logical;
+
+    SDL_RenderFillRect(
+        app.renderer,
+        &destination
+    );
+}
+
+
+SDL_Point rotateLogicalPointClockwise(
+    const SDL_Point& logical)
+{
+    SDL_Point physical
+    {
+        PORTRAIT_HEIGHT
+            - 1
+            - logical.y,
+
+        logical.x
+    };
+
+    return physical;
+}
+
+void drawLogicalLine(
+    App& app,
+    int x1,
+    int y1,
+    int x2,
+    int y2)
+{
+    SDL_Point first
+    {
+        x1,
+        y1
+    };
+
+    SDL_Point second
+    {
+        x2,
+        y2
+    };
+
+    if (
+        bookPortraitRendering(
+            app
+        )
+    )
+    {
+        first =
+            rotateLogicalPointClockwise(
+                first
+            );
+
+        second =
+            rotateLogicalPointClockwise(
+                second
+            );
+    }
+
+    SDL_RenderDrawLine(
+        app.renderer,
+        first.x,
+        first.y,
+        second.x,
+        second.y
+    );
+}
+
+void drawLogicalRectOutline(
+    App& app,
+    const SDL_Rect& logical)
+{
+    SDL_Rect destination =
+        bookPortraitRendering(
+            app
+        )
+        ? rotateLogicalRectClockwise(
+            logical
+        )
+        : logical;
+
+    SDL_RenderDrawRect(
+        app.renderer,
+        &destination
+    );
+}
+
+void drawTriangleButtonIcon(
+    App& app,
+    int x,
+    int y,
+    SDL_Color color)
+{
+    SDL_SetRenderDrawColor(
+        app.renderer,
+        color.r,
+        color.g,
+        color.b,
+        color.a
+    );
+
+    constexpr int size =
+        8;
+
+    drawLogicalLine(
+        app,
+        x + size / 2,
+        y,
+        x,
+        y + size
+    );
+
+    drawLogicalLine(
+        app,
+        x,
+        y + size,
+        x + size,
+        y + size
+    );
+
+    drawLogicalLine(
+        app,
+        x + size,
+        y + size,
+        x + size / 2,
+        y
+    );
+}
+
+void drawSquareButtonIcon(
+    App& app,
+    int x,
+    int y,
+    SDL_Color color)
+{
+    SDL_SetRenderDrawColor(
+        app.renderer,
+        color.r,
+        color.g,
+        color.b,
+        color.a
+    );
+
+    SDL_Rect logical
+    {
+        x,
+        y,
+        9,
+        9
+    };
+
+    drawLogicalRectOutline(
+        app,
+        logical
+    );
+}
+
+void drawCircleButtonIcon(
+    App& app,
+    int x,
+    int y,
+    SDL_Color color)
+{
+    SDL_SetRenderDrawColor(
+        app.renderer,
+        color.r,
+        color.g,
+        color.b,
+        color.a
+    );
+
+    const SDL_Point points[] =
+    {
+        {x + 3, y},
+        {x + 6, y},
+        {x + 8, y + 2},
+        {x + 9, y + 4},
+        {x + 8, y + 7},
+        {x + 6, y + 9},
+        {x + 3, y + 9},
+        {x + 1, y + 7},
+        {x,     y + 4},
+        {x + 1, y + 2},
+        {x + 3, y}
+    };
+
+    constexpr std::size_t pointCount =
+        sizeof(points)
+        /
+        sizeof(points[0]);
+
+    for (
+        std::size_t i = 0;
+        i + 1 < pointCount;
+        ++i
+    )
+    {
+        drawLogicalLine(
+            app,
+            points[i].x,
+            points[i].y,
+            points[i + 1].x,
+            points[i + 1].y
+        );
+    }
+}
+
+void drawText(
+    App& app,
+    TTF_Font* font,
+    const std::string& text,
+    int x,
+    int y,
+    SDL_Color color);
+
+int drawReaderFooterControls(
+    App& app,
+    int x,
+    int y,
+    SDL_Color color)
+{
+    constexpr int iconTextGap =
+        4;
+
+    constexpr int itemGap =
+        10;
+
+    constexpr int iconWidth =
+        9;
+
+    constexpr int iconYOffset =
+        3;
+
+    drawTriangleButtonIcon(
+        app,
+        x,
+        y + iconYOffset,
+        color
+    );
+
+    x +=
+        iconWidth
+        + iconTextGap;
+
+    drawText(
+        app,
+        app.fontSmall,
+        "Índice",
+        x,
+        y,
+        color
+    );
+
+    x +=
+        textPixelWidth(
+            app.fontSmall,
+            "Índice"
+        )
+        + itemGap;
+
+    drawSquareButtonIcon(
+        app,
+        x,
+        y + iconYOffset,
+        color
+    );
+
+    x +=
+        iconWidth
+        + iconTextGap;
+
+    drawText(
+        app,
+        app.fontSmall,
+        "Girar",
+        x,
+        y,
+        color
+    );
+
+    x +=
+        textPixelWidth(
+            app.fontSmall,
+            "Girar"
+        )
+        + itemGap;
+
+    drawCircleButtonIcon(
+        app,
+        x,
+        y + iconYOffset,
+        color
+    );
+
+    x +=
+        iconWidth
+        + iconTextGap;
+
+    drawText(
+        app,
+        app.fontSmall,
+        "Volver",
+        x,
+        y,
+        color
+    );
+
+    x +=
+        textPixelWidth(
+            app.fontSmall,
+            "Volver"
+        );
+
+    return x;
+}
+
+SDL_Surface* rotateSurfaceClockwise(
+    SDL_Surface* source)
+{
+    if (
+        !source ||
+        source->w <= 0 ||
+        source->h <= 0
+    )
+    {
+        return nullptr;
+    }
+
+    SDL_Surface* rgba =
+        SDL_ConvertSurfaceFormat(
+            source,
+            SDL_PIXELFORMAT_RGBA32,
+            0
+        );
+
+    if (
+        !rgba
+    )
+    {
+        return nullptr;
+    }
+
+    SDL_Surface* rotated =
+        SDL_CreateRGBSurfaceWithFormat(
+            0,
+            rgba->h,
+            rgba->w,
+            32,
+            SDL_PIXELFORMAT_RGBA32
+        );
+
+    if (
+        !rotated
+    )
+    {
+        SDL_FreeSurface(
+            rgba
+        );
+
+        return nullptr;
+    }
+
+    bool sourceLocked = false;
+    bool destinationLocked = false;
+
+    if (
+        SDL_MUSTLOCK(
+            rgba
+        )
+    )
+    {
+        if (
+            SDL_LockSurface(
+                rgba
+            ) != 0
+        )
+        {
+            SDL_FreeSurface(
+                rotated
+            );
+
+            SDL_FreeSurface(
+                rgba
+            );
+
+            return nullptr;
+        }
+
+        sourceLocked =
+            true;
+    }
+
+    if (
+        SDL_MUSTLOCK(
+            rotated
+        )
+    )
+    {
+        if (
+            SDL_LockSurface(
+                rotated
+            ) != 0
+        )
+        {
+            if (
+                sourceLocked
+            )
+            {
+                SDL_UnlockSurface(
+                    rgba
+                );
+            }
+
+            SDL_FreeSurface(
+                rotated
+            );
+
+            SDL_FreeSurface(
+                rgba
+            );
+
+            return nullptr;
+        }
+
+        destinationLocked =
+            true;
+    }
+
+    for (
+        int y = 0;
+        y < rgba->h;
+        ++y
+    )
+    {
+        const std::uint32_t* sourceRow =
+            reinterpret_cast<
+                const std::uint32_t*
+            >(
+                static_cast<
+                    const std::uint8_t*
+                >(
+                    rgba->pixels
+                )
+                + y * rgba->pitch
+            );
+
+        for (
+            int x = 0;
+            x < rgba->w;
+            ++x
+        )
+        {
+            const int destinationX =
+                rgba->h
+                - 1
+                - y;
+
+            const int destinationY =
+                x;
+
+            std::uint32_t* destinationRow =
+                reinterpret_cast<
+                    std::uint32_t*
+                >(
+                    static_cast<
+                        std::uint8_t*
+                    >(
+                        rotated->pixels
+                    )
+                    + destinationY
+                        * rotated->pitch
+                );
+
+            destinationRow[
+                destinationX
+            ] =
+                sourceRow[
+                    x
+                ];
+        }
+    }
+
+    if (
+        destinationLocked
+    )
+    {
+        SDL_UnlockSurface(
+            rotated
+        );
+    }
+
+    if (
+        sourceLocked
+    )
+    {
+        SDL_UnlockSurface(
+            rgba
+        );
+    }
+
+    SDL_FreeSurface(
+        rgba
+    );
+
+    return rotated;
+}
+
+void resetRendererTransform(
+    App& app)
+{
+    /*
+     * Portrait mode is rendered directly to the physical 480x272 PSP
+     * framebuffer. Coordinates are rotated mathematically, while text
+     * and image surfaces are rotated once before becoming textures.
+     *
+     * This avoids the PSP SDL renderer clipping a 272x480 destination
+     * before SDL_RenderCopyEx() can rotate it.
+     */
+    SDL_SetRenderTarget(
+        app.renderer,
+        nullptr
+    );
+
+    SDL_RenderSetLogicalSize(
+        app.renderer,
+        0,
+        0
+    );
+
+    SDL_RenderSetScale(
+        app.renderer,
+        1.0f,
+        1.0f
+    );
+
+    SDL_RenderSetViewport(
+        app.renderer,
+        nullptr
+    );
+
+    SDL_RenderSetClipRect(
+        app.renderer,
+        nullptr
+    );
+}
+
+void beginLandscapeFrame(
+    App& app)
+{
+    resetRendererTransform(
+        app
+    );
+}
+
+bool beginBookFrame(
+    App& app)
+{
+    resetRendererTransform(
+        app
+    );
+
+    return
+        bookPortraitRendering(
+            app
+        );
+}
+
+void presentBookFrame(
+    App& app,
+    bool portraitFrame)
+{
+    (void)portraitFrame;
+
+    SDL_RenderPresent(
+        app.renderer
+    );
 }
 
 void destroyReaderImage(
@@ -5215,16 +6043,87 @@ bool loadImageTextureFromEpub(
         }
     }
 
+    const int logicalWidth =
+        finalSurface->w;
+
+    const int logicalHeight =
+        finalSurface->h;
+
+    SDL_Surface* textureSurface =
+        finalSurface;
+
+    SDL_Surface* rotated =
+        nullptr;
+
+    const bool portrait =
+        bookPortraitRendering(
+            app
+        );
+
+    if (
+        portrait
+    )
+    {
+        rotated =
+            rotateSurfaceClockwise(
+                finalSurface
+            );
+
+        if (
+            !rotated
+        )
+        {
+            error =
+                "Could not rotate image";
+
+            if (
+                scaled
+            )
+            {
+                SDL_FreeSurface(
+                    scaled
+                );
+            }
+
+            if (
+                converted
+            )
+            {
+                SDL_FreeSurface(
+                    converted
+                );
+            }
+
+            SDL_FreeSurface(
+                source
+            );
+
+            return false;
+        }
+
+        textureSurface =
+            rotated;
+    }
+
     SDL_Texture* texture =
         SDL_CreateTextureFromSurface(
             app.renderer,
-            finalSurface
+            textureSurface
         );
 
     if (!texture)
     {
         error =
             SDL_GetError();
+
+        if (
+            rotated
+        )
+        {
+            SDL_FreeSurface(
+                rotated
+            );
+        }
 
         if (
             scaled
@@ -5254,11 +6153,24 @@ bool loadImageTextureFromEpub(
     outputTexture =
         texture;
 
+    /*
+     * Keep the logical dimensions. In portrait mode the actual texture
+     * has the swapped dimensions because its pixels are already rotated.
+     */
     outputWidth =
-        finalSurface->w;
+        logicalWidth;
 
     outputHeight =
-        finalSurface->h;
+        logicalHeight;
+
+    if (
+        rotated
+    )
+    {
+        SDL_FreeSurface(
+            rotated
+        );
+    }
 
     if (
         scaled
@@ -5283,16 +6195,26 @@ bool loadImageTextureFromEpub(
     );
 
     debugLog(
-        "IMG texture ready: %s = %dx%d",
+        "IMG texture ready: %s logical=%dx%d texture=%dx%d orientation=%s",
         imagePath.c_str(),
         outputWidth,
-        outputHeight
+        outputHeight,
+        portrait
+            ? outputHeight
+            : outputWidth,
+        portrait
+            ? outputWidth
+            : outputHeight,
+        portrait
+            ? "portrait"
+            : "landscape"
     );
 
     return true;
 }
 
 int imageAreaHeightForPage(
+    const App& app,
     const DocumentPage& page)
 {
     int captionHeight =
@@ -5312,7 +6234,9 @@ int imageAreaHeightForPage(
         std::max(
             80,
             (
-                READER_BOTTOM
+                readerContentBottom(
+                    app
+                )
                 - 43
             )
             - captionHeight
@@ -5366,6 +6290,7 @@ void loadCurrentPageImage(
 
     const int maxHeight =
         imageAreaHeightForPage(
+            app,
             page
         );
 
@@ -5384,7 +6309,9 @@ void loadCurrentPageImage(
                 app.currentBookIndex
             ],
             page.imagePath,
-            TEXT_WIDTH,
+            readerTextWidth(
+                app
+            ),
             maxHeight,
             texture,
             width,
@@ -5558,7 +6485,7 @@ void loadProgress(
             progress.pageIndex =
                 oldTopLine
                 /
-                READER_VISIBLE_LINES;
+                LEGACY_READER_VISIBLE_LINES;
         }
         else
         {
@@ -5583,7 +6510,7 @@ void loadProgress(
                 ? rawPosition
                 : rawPosition
                     /
-                    READER_VISIBLE_LINES;
+                    LEGACY_READER_VISIBLE_LINES;
         }
 
         app.savedProgress[
@@ -5668,7 +6595,8 @@ void rememberCurrentProgress(
 std::string makeTextCacheKey(
     TTF_Font* font,
     const std::string& text,
-    SDL_Color color)
+    SDL_Color color,
+    bool portrait)
 {
     return
         std::to_string(
@@ -5677,6 +6605,12 @@ std::string makeTextCacheKey(
             >(
                 font
             )
+        )
+        + "|"
+        + (
+            portrait
+            ? "P"
+            : "L"
         )
         + "|"
         + std::to_string(
@@ -5704,11 +6638,17 @@ CachedText* getCachedText(
     const std::string& text,
     SDL_Color color)
 {
+    const bool portrait =
+        bookPortraitRendering(
+            app
+        );
+
     const std::string key =
         makeTextCacheKey(
             font,
             text,
-            color
+            color,
+            portrait
         );
 
     auto existing =
@@ -5735,14 +6675,64 @@ CachedText* getCachedText(
     if (!surface)
         return nullptr;
 
+    const int logicalWidth =
+        surface->w;
+
+    const int logicalHeight =
+        surface->h;
+
+    SDL_Surface* textureSurface =
+        surface;
+
+    SDL_Surface* rotated =
+        nullptr;
+
+    if (
+        portrait
+    )
+    {
+        rotated =
+            rotateSurfaceClockwise(
+                surface
+            );
+
+        if (
+            !rotated
+        )
+        {
+            debugLog(
+                "Text rotation failed: %s",
+                SDL_GetError()
+            );
+
+            SDL_FreeSurface(
+                surface
+            );
+
+            return nullptr;
+        }
+
+        textureSurface =
+            rotated;
+    }
+
     SDL_Texture* texture =
         SDL_CreateTextureFromSurface(
             app.renderer,
-            surface
+            textureSurface
         );
 
     if (!texture)
     {
+        if (
+            rotated
+        )
+        {
+            SDL_FreeSurface(
+                rotated
+            );
+        }
+
         SDL_FreeSurface(
             surface
         );
@@ -5755,11 +6745,24 @@ CachedText* getCachedText(
     cached.texture =
         texture;
 
+    /*
+     * These remain the logical, unrotated dimensions. The backing
+     * portrait texture is logicalHeight x logicalWidth.
+     */
     cached.width =
-        surface->w;
+        logicalWidth;
 
     cached.height =
-        surface->h;
+        logicalHeight;
+
+    if (
+        rotated
+    )
+    {
+        SDL_FreeSurface(
+            rotated
+        );
+    }
 
     SDL_FreeSurface(
         surface
@@ -5801,13 +6804,22 @@ void drawText(
     if (!cached)
         return;
 
-    SDL_Rect destination
+    SDL_Rect logical
     {
         x,
         y,
         cached->width,
         cached->height
     };
+
+    SDL_Rect destination =
+        bookPortraitRendering(
+            app
+        )
+        ? rotateLogicalRectClockwise(
+            logical
+        )
+        : logical;
 
     SDL_RenderCopy(
         app.renderer,
@@ -5842,9 +6854,13 @@ void drawCenteredText(
         font,
         text,
         std::max(
-            TEXT_LEFT,
+            readerTextLeft(
+                app
+            ),
             (
-                SCREEN_WIDTH
+                canvasWidth(
+                    app
+                )
                 - width
             )
             / 2
@@ -6013,7 +7029,8 @@ void scheduleDocumentLoad(
     int searchDirection,
     Screen returnScreen,
     const std::string& fragment,
-    int tocIndex)
+    int tocIndex,
+    double restoreRatio = 0.0)
 {
     if (
         spineIndex < 0 ||
@@ -6034,6 +7051,13 @@ void scheduleDocumentLoad(
 
     app.pendingRestorePage =
         restorePage;
+
+    app.pendingRestoreRatio =
+        std::clamp(
+            restoreRatio,
+            0.0,
+            1.0
+        );
 
     app.pendingSearchDirection =
         searchDirection >= 0
@@ -6273,6 +7297,10 @@ void finishDocument(
         return;
     }
 
+    const bool relativeRelayout =
+        app.pendingPosition ==
+        DocumentPosition::Relative;
+
     app.readerPages =
         std::move(
             layout.pages
@@ -6378,6 +7406,48 @@ void finishDocument(
 
             break;
         }
+
+        case DocumentPosition::Relative:
+        {
+            if (
+                app.readerPages.size() <= 1
+            )
+            {
+                app.readerPageIndex =
+                    0;
+            }
+            else
+            {
+                const double scaled =
+                    app.pendingRestoreRatio
+                    *
+                    static_cast<double>(
+                        app.readerPages.size()
+                        - 1
+                    );
+
+                app.readerPageIndex =
+                    std::clamp(
+                        static_cast<int>(
+                            scaled + 0.5
+                        ),
+                        0,
+                        static_cast<int>(
+                            app.readerPages.size()
+                        )
+                        - 1
+                    );
+            }
+
+            debugLog(
+                "Relative position restored: ratio=%.3f -> page %d/%zu",
+                app.pendingRestoreRatio,
+                app.readerPageIndex + 1,
+                app.readerPages.size()
+            );
+
+            break;
+        }
     }
 
     app.tocSelected =
@@ -6414,7 +7484,11 @@ void finishDocument(
     );
 
     debugLog(
-        "DISPLAY: spine=%d/%zu page=%d/%zu title=%s",
+        "DISPLAY: orientation=%s spine=%d/%zu page=%d/%zu title=%s",
+        app.orientation ==
+            Orientation::Portrait
+        ? "portrait"
+        : "landscape",
         app.readerSpineIndex + 1,
         app.readerSpine.size(),
         app.readerPageIndex + 1,
@@ -6423,6 +7497,15 @@ void finishDocument(
             app
         ).c_str()
     );
+
+    if (
+        relativeRelayout
+    )
+    {
+        rememberCurrentProgress(
+            app
+        );
+    }
 }
 
 void processLoadingStage(
@@ -6662,7 +7745,11 @@ void processLoadingStage(
             );
 
         debugLog(
-            "LAYOUT: %s -> %zu pages, %zu mapped anchors",
+            "LAYOUT: orientation=%s %s -> %zu pages, %zu mapped anchors",
+            app.orientation ==
+                Orientation::Portrait
+            ? "portrait"
+            : "landscape",
             app.pendingDocument
                 .path.c_str(),
             layout.pages.size(),
@@ -6832,6 +7919,73 @@ void moveReaderByPage(
     navigateToAdjacentDocument(
         app,
         direction
+    );
+}
+
+void toggleReaderOrientation(
+    App& app)
+{
+    if (
+        app.readerSpineIndex < 0 ||
+        app.readerPages.empty()
+    )
+    {
+        return;
+    }
+
+    double relativePosition = 0.0;
+
+    if (
+        app.readerPages.size() > 1
+    )
+    {
+        relativePosition =
+            static_cast<double>(
+                app.readerPageIndex
+            )
+            /
+            static_cast<double>(
+                app.readerPages.size()
+                - 1
+            );
+    }
+
+    const Orientation next =
+        app.orientation ==
+            Orientation::Landscape
+        ? Orientation::Portrait
+        : Orientation::Landscape;
+
+    app.orientation =
+        next;
+
+    saveSettings(
+        app
+    );
+
+    debugLog(
+        "Orientation changed to %s at relative position %.3f",
+        app.orientation ==
+            Orientation::Portrait
+        ? "portrait"
+        : "landscape",
+        relativePosition
+    );
+
+    destroyReaderImage(
+        app
+    );
+
+    scheduleDocumentLoad(
+        app,
+        app.readerSpineIndex,
+        DocumentPosition::Relative,
+        0,
+        1,
+        Screen::Reader,
+        "",
+        app.readerActiveTocIndex,
+        relativePosition
     );
 }
 
@@ -7068,10 +8222,12 @@ bool initialize(
     if (!app.renderer)
         return false;
 
-    SDL_RenderSetLogicalSize(
-        app.renderer,
-        SCREEN_WIDTH,
-        SCREEN_HEIGHT
+    resetRendererTransform(
+        app
+    );
+
+    loadSettings(
+        app
     );
 
     app.fontNormal =
@@ -7189,6 +8345,14 @@ bool initialize(
     debugLog(
         "Found %zu EPUB(s)",
         app.books.size()
+    );
+
+    debugLog(
+        "Startup orientation: %s",
+        app.orientation ==
+            Orientation::Portrait
+        ? "portrait"
+        : "landscape"
     );
 
     return true;
@@ -7351,6 +8515,15 @@ void handleReaderButton(
         case SDL_CONTROLLER_BUTTON_Y:
         {
             openToc(
+                app
+            );
+
+            break;
+        }
+
+        case SDL_CONTROLLER_BUTTON_X:
+        {
+            toggleReaderOrientation(
                 app
             );
 
@@ -7575,6 +8748,10 @@ void handleInput(
 void renderLibrary(
     App& app)
 {
+    beginLandscapeFrame(
+        app
+    );
+
     const SDL_Color background
     {
         18,
@@ -7847,6 +9024,21 @@ void renderLibrary(
 void renderLoading(
     App& app)
 {
+    const bool portraitFrame =
+        beginBookFrame(
+            app
+        );
+
+    const int width =
+        canvasWidth(
+            app
+        );
+
+    const int height =
+        canvasHeight(
+            app
+        );
+
     const SDL_Color background
     {
         18,
@@ -7903,7 +9095,7 @@ void renderLoading(
     {
         0,
         0,
-        SCREEN_WIDTH,
+        width,
         42
     };
 
@@ -7915,9 +9107,9 @@ void renderLoading(
         panel.a
     );
 
-    SDL_RenderFillRect(
-        app.renderer,
-        &header
+    fillLogicalRect(
+        app,
+        header
     );
 
     drawText(
@@ -7953,7 +9145,7 @@ void renderLoading(
         fitTextToWidth(
             app.fontSmall,
             bookTitle,
-            430
+            width - 48
         ),
         24,
         78,
@@ -7967,7 +9159,11 @@ void renderLoading(
     drawText(
         app,
         app.fontNormal,
-        app.loadingMessage,
+        fitTextToWidth(
+            app.fontNormal,
+            app.loadingMessage,
+            width - 48
+        ),
         24,
         112,
         isError
@@ -7981,7 +9177,7 @@ void renderLoading(
         fitTextToWidth(
             app.fontSmall,
             app.loadingDetail,
-            430
+            width - 48
         ),
         24,
         145,
@@ -7997,18 +9193,44 @@ void renderLoading(
             ? "O Back"
             : "Please wait...",
         24,
-        248,
+        height - 24,
         muted
     );
 
-    SDL_RenderPresent(
-        app.renderer
+    presentBookFrame(
+        app,
+        portraitFrame
     );
 }
 
 void renderReader(
     App& app)
 {
+    const bool portraitFrame =
+        beginBookFrame(
+            app
+        );
+
+    const int width =
+        canvasWidth(
+            app
+        );
+
+    const int height =
+        canvasHeight(
+            app
+        );
+
+    const int textLeft =
+        readerTextLeft(
+            app
+        );
+
+    const int textWidth =
+        readerTextWidth(
+            app
+        );
+
     const SDL_Color background
     {
         244,
@@ -8065,7 +9287,7 @@ void renderReader(
     {
         0,
         0,
-        SCREEN_WIDTH,
+        width,
         36
     };
 
@@ -8077,9 +9299,9 @@ void renderReader(
         header.a
     );
 
-    SDL_RenderFillRect(
-        app.renderer,
-        &headerRect
+    fillLogicalRect(
+        app,
+        headerRect
     );
 
     std::string logicalIndicator;
@@ -8120,14 +9342,14 @@ void renderReader(
         );
 
     const int indicatorX =
-        SCREEN_WIDTH
-        - 16
+        width
+        - 12
         - indicatorWidth;
 
     const int titleMaxWidth =
         std::max(
             40,
-            indicatorX - 28
+            indicatorX - 24
         );
 
     drawText(
@@ -8140,7 +9362,7 @@ void renderReader(
             ),
             titleMaxWidth
         ),
-        16,
+        12,
         10,
         text
     );
@@ -8208,7 +9430,7 @@ void renderReader(
                             app,
                             lineFont,
                             line.text,
-                            TEXT_LEFT,
+                            textLeft,
                             y,
                             text
                         );
@@ -8223,6 +9445,7 @@ void renderReader(
         {
             const int imageAreaHeight =
                 imageAreaHeightForPage(
+                    app,
                     page
                 );
 
@@ -8235,9 +9458,9 @@ void renderReader(
             {
                 SDL_Rect destination
                 {
-                    TEXT_LEFT
+                    textLeft
                         + (
-                            TEXT_WIDTH
+                            textWidth
                             - app.readerImageWidth
                         )
                         / 2,
@@ -8253,11 +9476,20 @@ void renderReader(
                     app.readerImageHeight
                 };
 
+                SDL_Rect physicalDestination =
+                    bookPortraitRendering(
+                        app
+                    )
+                    ? rotateLogicalRectClockwise(
+                        destination
+                    )
+                    : destination;
+
                 SDL_RenderCopy(
                     app.renderer,
                     app.readerImageTexture,
                     nullptr,
-                    &destination
+                    &physicalDestination
                 );
             }
             else
@@ -8307,7 +9539,7 @@ void renderReader(
     }
 
     const std::string pageProgress =
-        "Page "
+        "Pág. "
         + std::to_string(
             app.readerPageIndex + 1
         )
@@ -8319,40 +9551,125 @@ void renderReader(
             )
         );
 
-    drawText(
-        app,
-        app.fontSmall,
-        "L/R Page  TRIANGLE Index  O Back",
-        14,
-        253,
-        muted
-    );
+    if (
+        app.orientation ==
+        Orientation::Portrait
+    )
+    {
+        const int footerLine1 =
+            height - 34;
 
-    const int progressWidth =
-        textPixelWidth(
+        const int footerLine2 =
+            height - 18;
+
+        drawText(
+            app,
             app.fontSmall,
-            pageProgress
+            "L/R Página",
+            10,
+            footerLine1,
+            muted
         );
 
-    drawText(
-        app,
-        app.fontSmall,
-        pageProgress,
-        SCREEN_WIDTH
-            - 14
-            - progressWidth,
-        253,
-        muted
-    );
+        const int progressWidth =
+            textPixelWidth(
+                app.fontSmall,
+                pageProgress
+            );
 
-    SDL_RenderPresent(
-        app.renderer
+        drawText(
+            app,
+            app.fontSmall,
+            pageProgress,
+            width
+                - 10
+                - progressWidth,
+            footerLine1,
+            muted
+        );
+
+        drawReaderFooterControls(
+            app,
+            10,
+            footerLine2,
+            muted
+        );
+    }
+    else
+    {
+        constexpr int footerY =
+            253;
+
+        drawText(
+            app,
+            app.fontSmall,
+            "L/R Página",
+            14,
+            footerY,
+            muted
+        );
+
+        const int controlsX =
+            14
+            + textPixelWidth(
+                app.fontSmall,
+                "L/R Página"
+            )
+            + 12;
+
+        drawReaderFooterControls(
+            app,
+            controlsX,
+            footerY,
+            muted
+        );
+
+        const int progressWidth =
+            textPixelWidth(
+                app.fontSmall,
+                pageProgress
+            );
+
+        drawText(
+            app,
+            app.fontSmall,
+            pageProgress,
+            width
+                - 14
+                - progressWidth,
+            253,
+            muted
+        );
+    }
+
+    presentBookFrame(
+        app,
+        portraitFrame
     );
 }
 
 void renderToc(
     App& app)
 {
+    const bool portraitFrame =
+        beginBookFrame(
+            app
+        );
+
+    const int width =
+        canvasWidth(
+            app
+        );
+
+    const int height =
+        canvasHeight(
+            app
+        );
+
+    const bool portrait =
+        app.orientation ==
+        Orientation::Portrait;
+
     const SDL_Color background
     {
         18,
@@ -8417,8 +9734,10 @@ void renderToc(
     {
         0,
         0,
-        SCREEN_WIDTH,
-        45
+        width,
+        portrait
+            ? 52
+            : 45
     };
 
     SDL_SetRenderDrawColor(
@@ -8429,53 +9748,86 @@ void renderToc(
         header.a
     );
 
-    SDL_RenderFillRect(
-        app.renderer,
-        &headerRect
-    );
-
-    drawText(
+    fillLogicalRect(
         app,
-        app.fontNormal,
-        "Table of Contents",
-        16,
-        7,
-        text
-    );
-
-    drawText(
-        app,
-        app.fontSmall,
-        fitTextToWidth(
-            app.fontSmall,
-            app.readerTitle,
-            250
-        ),
-        214,
-        13,
-        muted
+        headerRect
     );
 
     if (
-        app.readerToc.empty()
+        portrait
     )
     {
         drawText(
             app,
             app.fontNormal,
+            "Table of Contents",
+            12,
+            5,
+            text
+        );
+
+        drawText(
+            app,
+            app.fontSmall,
+            fitTextToWidth(
+                app.fontSmall,
+                app.readerTitle,
+                width - 24
+            ),
+            12,
+            29,
+            muted
+        );
+    }
+    else
+    {
+        drawText(
+            app,
+            app.fontNormal,
+            "Table of Contents",
+            16,
+            7,
+            text
+        );
+
+        drawText(
+            app,
+            app.fontSmall,
+            fitTextToWidth(
+                app.fontSmall,
+                app.readerTitle,
+                250
+            ),
+            214,
+            13,
+            muted
+        );
+    }
+
+    if (
+        app.readerToc.empty()
+    )
+    {
+        drawCenteredText(
+            app,
+            app.fontNormal,
             "No chapters",
-            175,
-            120,
+            height / 2,
             text
         );
     }
     else
     {
+        const int visibleItems =
+            tocVisibleItems(
+                app
+            );
+
         int firstItem =
             app.tocSelected >=
-                TOC_VISIBLE_ITEMS
+                visibleItems
             ? app.tocSelected
-                - TOC_VISIBLE_ITEMS
+                - visibleItems
                 + 1
             : 0;
 
@@ -8485,7 +9837,7 @@ void renderToc(
                 static_cast<int>(
                     app.readerToc.size()
                 )
-                - TOC_VISIBLE_ITEMS
+                - visibleItems
             );
 
         firstItem =
@@ -8495,9 +9847,14 @@ void renderToc(
                 maxFirst
             );
 
+        const int firstY =
+            portrait
+            ? 60
+            : 53;
+
         for (
             int row = 0;
-            row < TOC_VISIBLE_ITEMS;
+            row < visibleItems;
             ++row
         )
         {
@@ -8516,7 +9873,7 @@ void renderToc(
             }
 
             const int y =
-                53
+                firstY
                 + row
                 * TOC_ROW_HEIGHT;
 
@@ -8534,9 +9891,9 @@ void renderToc(
             {
                 SDL_Rect selectionRect
                 {
-                    12,
+                    8,
                     y - 3,
-                    456,
+                    width - 16,
                     24
                 };
 
@@ -8548,9 +9905,9 @@ void renderToc(
                     selection.a
                 );
 
-                SDL_RenderFillRect(
-                    app.renderer,
-                    &selectionRect
+                fillLogicalRect(
+                    app,
+                    selectionRect
                 );
             }
 
@@ -8570,8 +9927,8 @@ void renderToc(
                 );
 
             const int numberX =
-                SCREEN_WIDTH
-                - 22
+                width
+                - 12
                 - numberWidth;
 
             std::string title =
@@ -8592,14 +9949,14 @@ void renderToc(
                 fitTextToWidth(
                     app.fontSmall,
                     title,
-                    numberX - 34
+                    numberX - 24
                 );
 
             drawText(
                 app,
                 app.fontSmall,
                 title,
-                22,
+                12,
                 y,
                 isCurrent
                     ? current
@@ -8620,14 +9977,15 @@ void renderToc(
     drawText(
         app,
         app.fontSmall,
-        "X Jump   O Back   TRIANGLE Close",
-        14,
-        249,
+        "X Jump  O Back  TRI Close",
+        10,
+        height - 19,
         muted
     );
 
-    SDL_RenderPresent(
-        app.renderer
+    presentBookFrame(
+        app,
+        portraitFrame
     );
 }
 
@@ -8680,6 +10038,10 @@ void shutdown(
     App& app)
 {
     rememberCurrentProgress(
+        app
+    );
+
+    saveSettings(
         app
     );
 
